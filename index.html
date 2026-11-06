@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>湧き潰しビート 試作6</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0b0a0e; color: #e9e2d0;
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; }
+  #hud { width: 100%; max-width: 1120px; display: flex; gap: 18px; align-items: center;
+    padding: 8px 12px; font-size: 14px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+  #hud b { font-size: 18px; color: #ffd27a; }
+  .bar { width: 150px; height: 10px; background: #26222e; border-radius: 5px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#ffb347,#ff5fa2); }
+  #hpbar > i { background: #e5484d; }
+  #wrap { position: relative; width: 100%; max-width: 1120px; flex: 1; min-height: 0; display: flex; justify-content: center; }
+  canvas { max-width: 100%; max-height: 100%; aspect-ratio: 1120 / 720; background: #000; border-radius: 6px; }
+  #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(8,7,11,.86); }
+  #panel { max-width: 560px; padding: 24px 28px; background: #17141d; border: 1px solid #3a3346; border-radius: 12px; line-height: 1.75; }
+  #panel h1 { margin: 0 0 8px; font-size: 22px; color: #ffd27a; }
+  #panel p { margin: 6px 0; font-size: 14px; }
+  kbd { background: #2c2636; border: 1px solid #4a4158; border-bottom-width: 2px; border-radius: 4px; padding: 0 6px; font-family: inherit; font-size: 13px; }
+  button { margin-top: 14px; font: inherit; font-size: 16px; font-weight: 700; color: #1a1408; background: #ffd27a;
+    border: 0; border-radius: 8px; padding: 10px 22px; cursor: pointer; }
+  button:hover { background: #ffe0a3; }
+  #help { font-size: 12px; color: #8f879c; padding: 6px 12px 10px; text-align: center; }
+  .opt { display: block; padding: 8px 12px; margin: 6px 0; border: 1px solid #3a3346; border-radius: 8px; font-size: 14px; }
+  .opt.sel { border-color: #ffd27a; background: #2a2433; }
+  .opt small { color: #a79fb5; display: block; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <span>アイテム <b id="got">0</b></span>
+  <span>敵 <b id="pct">0</b></span>
+  <span>時間 <b id="time">0:00</b></span>
+  <span>HP <span class="bar" id="hpbar"><i></i></span></span>
+  <span>ベスト <b id="lv">-</b></span>
+  <span id="wname"></span>
+</div>
+<div id="wrap">
+  <canvas id="c" width="1120" height="720"></canvas>
+  <div id="overlay"><div id="panel">
+    <h1 id="ptitle">ビート洞窟 試作6</h1>
+    <div id="pbody">
+      <p>拍で動く群れを縫って、アイテムをいくつ取れるか。</p>
+      <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動だけ。敵は倒せない。避けるだけ。</p>
+      <p>敵はすべて拍に合わせて決まった型で動く。緑は往復、青は周回、赤は予告してから突進、橙はその場で脈動、紫だけがゆっくり追ってくる。</p>
+      <p>敵は少しずつ、ランダムな場所にランダムな型で増えていく。現れる前に4拍のあいだ輪郭で予告される。アイテムは洞窟のどこかに1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。<kbd>R</kbd> やり直し。音が出ます。</p>
+    </div>
+    <button id="start">はじめる</button>
+  </div></div>
+</div>
+<div id="help">WASD 移動 / R やり直し</div>
+
+<script>
+(() => {
+'use strict';
+const W = 56, H = 36, T = 20;
+const BEAT = 60 / 104;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+const PENTA = [0, 3, 5, 7, 10, 12, 15, 17];
+const ROOT = 110;
+const idx = (x, y) => y * W + x;
+let open, lit, litAt, dist, openCount, litCount, lightBank = 0;
+let player, enemies, items, parts, rings, lightR;
+let tGame, beatNo, hitsTaken, running = false, over = false, distT, shake, clearing, noteNo;
+const isOpen = (x, y) => x >= 0 && y >= 0 && x < W && y < H && open[idx(x, y)] === 1;
+/* ---------- audio ---------- */
+let ac = null, master = null, noiseBuf = null;
+function initAudio() {
+  if (ac) { ac.resume(); return; }
+  try {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    master = ac.createGain(); master.gain.value = 0.5;
+    const comp = ac.createDynamicsCompressor();
+    master.connect(comp); comp.connect(ac.destination);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.5, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  } catch (e) { ac = null; }
+}
+function tone(type, f0, f1, dur, vol, at = 0) {
+  if (!ac) return;
+  const t = ac.currentTime + at, o = ac.createOscillator(), v = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f0, t);
+  if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
+  v.gain.setValueAtTime(0.0001, t);
+  v.gain.exponentialRampToValueAtTime(vol, t + 0.006);
+  v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(v); v.connect(master); o.start(t); o.stop(t + dur + 0.02);
+}
+function noise(dur, vol, hp, at = 0) {
+  if (!ac) return;
+  const t = ac.currentTime + at, s = ac.createBufferSource(), f = ac.createBiquadFilter(), v = ac.createGain();
+  s.buffer = noiseBuf; f.type = 'highpass'; f.frequency.value = hp;
+  v.gain.setValueAtTime(vol, t); v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(v); v.connect(master); s.start(t); s.stop(t + dur + 0.02);
+}
+const semi = (root, n) => root * Math.pow(2, n / 12);
+
+function genCave() {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    let a = new Uint8Array(W * H);
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) a[idx(x, y)] = Math.random() < 0.56 ? 1 : 0;
+    for (let it = 0; it < 5; it++) {
+      const b = new Uint8Array(W * H);
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+        let n = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) n += a[idx(x + dx, y + dy)];
+        b[idx(x, y)] = n >= 5 ? 1 : 0;
+      }
+      a = b;
+    }
+    const lab = new Int32Array(W * H).fill(-1); let best = -1, bestN = 0, L = 0;
+    for (let i = 0; i < W * H; i++) {
+      if (!a[i] || lab[i] >= 0) continue;
+      let n = 0; const q = [i]; lab[i] = L;
+      while (q.length) {
+        const c = q.pop(); n++; const cx = c % W, cy = (c / W) | 0;
+        for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+          const j = idx(cx + dx, cy + dy);
+          if (a[j] && lab[j] < 0) { lab[j] = L; q.push(j); }
+        }
+      }
+      if (n > bestN) { bestN = n; best = L; }
+      L++;
+    }
+    if (bestN < W * H * 0.38) continue;
+    for (let i = 0; i < W * H; i++) a[i] = lab[i] === best ? 1 : 0;
+    // widen one-tile corridors so there is always a lane to slip past an enemy
+    for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
+      if (!a[idx(x, y)]) continue;
+      if (!a[idx(x - 1, y)] && !a[idx(x + 1, y)]) a[idx(x + 1, y)] = 1;
+      if (!a[idx(x, y - 1)] && !a[idx(x, y + 1)]) a[idx(x, y + 1)] = 1;
+    }
+    let cnt = 0; for (let i = 0; i < W * H; i++) cnt += a[i];
+    open = a; openCount = cnt; return;
+  }
+}
+
+function computeDist() {
+  dist.fill(-1);
+  const s = idx(player.x | 0, player.y | 0); const q = new Int32Array(W * H); let h = 0, t = 0;
+  dist[s] = 0; q[t++] = s;
+  while (h < t) {
+    const c = q[h++], cx = c % W, cy = (c / W) | 0, d = dist[c] + 1;
+    if (cx > 0 && open[c - 1] && dist[c - 1] < 0) { dist[c - 1] = d; q[t++] = c - 1; }
+    if (cx < W - 1 && open[c + 1] && dist[c + 1] < 0) { dist[c + 1] = d; q[t++] = c + 1; }
+    if (cy > 0 && open[c - W] && dist[c - W] < 0) { dist[c - W] = d; q[t++] = c - W; }
+    if (cy < H - 1 && open[c + W] && dist[c + W] < 0) { dist[c + W] = d; q[t++] = c + W; }
+  }
+}
+
+// light spreads through open tiles only, so walls block it
+function lightAt(px, py, r) {
+  const sx = px | 0, sy = py | 0; if (!isOpen(sx, sy)) return 0;
+  const seen = new Set([idx(sx, sy)]); const q = [[sx, sy, 0]]; let gained = 0;
+  const maxSteps = Math.ceil(r * 1.6);
+  while (q.length) {
+    const [x, y, d] = q.shift(); const i = idx(x, y);
+    if (!lit[i]) { lit[i] = 1; litAt[i] = tGame + Math.hypot(x + 0.5 - px, y + 0.5 - py) * 0.035; litCount++; gained++; }
+    if (d >= maxSteps) continue;
+    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const nx = x + dx, ny = y + dy, j = idx(nx, ny);
+      if (!isOpen(nx, ny) || seen.has(j)) continue;
+      if (Math.hypot(nx + 0.5 - px, ny + 0.5 - py) > r) continue;
+      seen.add(j); q.push([nx, ny, d + 1]);
+    }
+  }
+  lightBank += gained;
+  return gained;
+}
+
+
+
+const LOOP = [[1,0],[1,0],[0,1],[0,1],[-1,0],[-1,0],[0,-1],[0,-1]];
+const COL = { pat: '#5fae57', loop: '#4d8fe0', chg: '#e0524d', pul: '#f09a3e', chs: '#9a5fd0' };
+
+function reset() {
+  genCave();
+  lit = new Uint8Array(W * H); litAt = new Float32Array(W * H); dist = new Int16Array(W * H);
+  litCount = 0; enemies = []; items = []; parts = []; rings = [];
+  let s; do { s = (Math.random() * W * H) | 0; } while (!open[s]);
+  player = { x: (s % W) + 0.5, y: ((s / W) | 0) + 0.5, hp: 3, inv: 0, fx: 1, fy: 0 };
+  lightR = 3.0; hitsTaken = 0; noteNo = 0;
+  tGame = 0; beatNo = -1; over = false; distT = 0; shake = 0; clearing = false;
+  computeDist();
+  for (let i = 0; i < W * H; i++) if (open[i]) { lit[i] = 1; litAt[i] = -9; }
+  litCount = openCount;
+  for (let k = 0; k < 35; k++) addEnemy(0);
+  got = 0; placeGem();
+}
+let gem = null, got = 0;
+// one item at a time, somewhere a real walk away
+function placeGem() {
+  for (let k = 0; k < 200; k++) {
+    const i = (Math.random() * W * H) | 0;
+    if (!open[i] || dist[i] < (k < 150 ? 14 : 5)) continue;
+    gem = { x: (i % W) + 0.5, y: ((i / W) | 0) + 0.5, t: tGame }; return;
+  }
+}
+
+const MIX = [['pat', 0.44], ['loop', 0.2], ['pul', 0.13], ['chg', 0.13], ['chs', 0.10]];
+// enemies arrive at random: random tile, random type, announced as a ghost for a few beats
+function addEnemy(ghost) {
+  for (let k = 0; k < 80; k++) {
+    const i = (Math.random() * W * H) | 0;
+    if (!open[i] || dist[i] < 8) continue;
+    let r = Math.random(), type = 'pat';
+    for (const [t, f] of MIX) { if (r < f) { type = t; break; } r -= f; }
+    const x = i % W, y = (i / W) | 0;
+    const e = { type, x, y, fx: x, fy: y, mt: -9, md: 0.3, off: (Math.random() * 8) | 0, dx: 0, dy: 0, tel: false, burst: -9, ghost };
+    if (type === 'pat') { if (Math.random() < 0.5) e.dx = Math.random() < 0.5 ? 1 : -1; else e.dy = Math.random() < 0.5 ? 1 : -1; }
+    enemies.push(e); return;
+  }
+}
+
+function burst(x, y, n, col) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 6.283, s = 2 + Math.random() * 6;
+    parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, t: 0, life: 0.25 + Math.random() * 0.25, col });
+  }
+}
+// where the enemy is drawn and collides right now (hop tween between tiles)
+function epos(e) {
+  const k = Math.min(1, (tGame - e.mt) / (BEAT * e.md)), q = k * (2 - k);
+  return [e.fx + (e.x - e.fx) * q + 0.5, e.fy + (e.y - e.fy) * q + 0.5, k];
+}
+function stepTo(e, nx, ny, md = 0.3) { e.fx = e.x; e.fy = e.y; e.x = nx; e.y = ny; e.mt = tGame; e.md = md; }
+
+/* ---------- every enemy moves on the beat, each type in its own pattern ---------- */
+function onBeat(n) {
+  const near = { pat: 99, loop: 99, chg: 99, pul: 99, chs: 99 }, ev = {};
+  const px = player.x, py = player.y;
+  const every = n < 200 ? 3 : 2;
+  if (n > 0 && n % every === 0) addEnemy(4);
+  for (const e of enemies) {
+    if (e.ghost > 0) { if (--e.ghost === 0) burst(e.x + 0.5, e.y + 0.5, 6, COL[e.type]); continue; }
+    const d = Math.hypot(e.x + 0.5 - px, e.y + 0.5 - py), ph = (n + e.off) % 4;
+    let acted = false;
+    if (e.type === 'pat') {                       // back and forth, one tile a beat
+      if (!isOpen(e.x + e.dx, e.y + e.dy)) { e.dx = -e.dx; e.dy = -e.dy; }
+      if (isOpen(e.x + e.dx, e.y + e.dy)) { stepTo(e, e.x + e.dx, e.y + e.dy); acted = true; }
+    } else if (e.type === 'loop') {               // walks a small square
+      const [dx, dy] = LOOP[(n + e.off) % 8]; e.dx = dx; e.dy = dy;
+      if (isOpen(e.x + dx, e.y + dy)) { stepTo(e, e.x + dx, e.y + dy); acted = true; }
+    } else if (e.type === 'chg') {                // rest, rest, aim, dash
+      if (ph === 2 && d < 11) {
+        const ax = px - (e.x + 0.5), ay = py - (e.y + 0.5);
+        if (Math.abs(ax) > Math.abs(ay)) { e.dx = Math.sign(ax); e.dy = 0; } else { e.dx = 0; e.dy = Math.sign(ay); }
+        e.tel = true; ev.aim = Math.min(ev.aim ?? 99, d);
+      } else if (ph === 3 && e.tel) {
+        let nx = e.x, ny = e.y;
+        for (let k = 0; k < 5 && isOpen(nx + e.dx, ny + e.dy); k++) { nx += e.dx; ny += e.dy; }
+        stepTo(e, nx, ny, 0.45); e.tel = false; acted = true;
+      } else e.tel = false;
+    } else if (e.type === 'pul') {                // stays put; swells on its fourth beat
+      e.tel = ph === 3;
+      if (ph === 0) { e.burst = tGame; acted = true; }
+    } else if (e.type === 'chs') {                // the only one that follows, every other beat
+      const dd = dist[idx(e.x, e.y)];
+      if (ph % 2 === 0 && dd > 0 && dd < 14) {
+        let bd = dd, bx = e.x, by = e.y;
+        for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+          const nd = isOpen(e.x + dx, e.y + dy) ? dist[idx(e.x + dx, e.y + dy)] : -1;
+          if (nd >= 0 && nd < bd) { bd = nd; bx = e.x + dx; by = e.y + dy; }
+        }
+        stepTo(e, bx, by, 0.4); acted = true;
+      }
+    }
+    if (acted && d < near[e.type]) near[e.type] = d;
+  }
+  // the crowd nearby is what you hear
+  const vol = d => Math.max(0, 1 - d / 9);
+  tone('sine', 110, 45, 0.12, 0.28);
+  if (vol(near.pat)) noise(0.03, 0.22 * vol(near.pat), 7000);
+  if (vol(near.loop)) { const p = PENTA[[0, 2, 4, 2][n % 4]]; tone('square', semi(ROOT * 4, p), semi(ROOT * 4, p), 0.08, 0.07 * vol(near.loop)); }
+  if (vol(near.chs)) tone('sawtooth', semi(ROOT / 2, n % 4 ? 0 : 7), semi(ROOT / 2, 0), 0.25, 0.22 * vol(near.chs));
+  if (vol(near.pul)) { tone('sine', 80, 30, 0.4, 0.8 * vol(near.pul)); noise(0.18, 0.2 * vol(near.pul), 500); }
+  if (vol(near.chg)) { noise(0.12, 0.4 * vol(near.chg), 1800); tone('square', 300, 90, 0.12, 0.12 * vol(near.chg)); }
+  if (ev.aim !== undefined && vol(ev.aim)) tone('square', 400, 800, 0.2, 0.09 * vol(ev.aim));
+
+  const c = enemies.length;
+  if (c >= 15) { const b = [0, 0, 7, 0, 5, 0, 3, 7][n % 8]; tone('sawtooth', semi(ROOT / 2, b), semi(ROOT / 2, b), 0.2, 0.13); }
+  if (c >= 30) { const a = PENTA[[0, 2, 4, 2, 5, 4, 2, 1][n % 8]]; tone('triangle', semi(ROOT * 2, a), semi(ROOT * 2, a), 0.12, 0.12); tone('triangle', semi(ROOT * 2, a + 7), semi(ROOT * 2, a + 7), 0.1, 0.08, BEAT / 2); }
+  if (c >= 50 && n % 2 === 1) noise(0.1, 0.16, 2200);
+  if (c >= 70) noise(0.025, 0.1, 8000, BEAT / 2);
+}
+
+/* ---------- update ---------- */
+const keys = {};
+function moveCircle(o, dx, dy, r) {
+  const hitWall = (x, y) => !isOpen((x - r) | 0, (y - r) | 0) || !isOpen((x + r) | 0, (y - r) | 0) ||
+                            !isOpen((x - r) | 0, (y + r) | 0) || !isOpen((x + r) | 0, (y + r) | 0);
+  if (!hitWall(o.x + dx, o.y)) o.x += dx;
+  if (!hitWall(o.x, o.y + dy)) o.y += dy;
+}
+function hurt() {
+  if (player.inv > 0 || clearing) return;
+  player.hp--; hitsTaken++; player.inv = 1.3; shake = 7;
+  burst(player.x, player.y, 8, '#ff8a8a');
+  tone('square', 90, 40, 0.25, 0.35); noise(0.12, 0.3, 300);
+  if (player.hp <= 0) endGame(false);
+}
+
+function update(dt) {
+  tGame += dt;
+  let mx = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
+  let my = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
+  if (mx || my) {
+    const l = Math.hypot(mx, my); mx /= l; my /= l; player.fx = mx; player.fy = my;
+    moveCircle(player, mx * 5 * dt, my * 5 * dt, 0.3);
+  }
+  player.inv = Math.max(0, player.inv - dt);
+  distT -= dt; if (distT <= 0) { computeDist(); distT = 0.2; }
+
+  const n = Math.floor(tGame / BEAT);
+  if (n !== beatNo && !clearing) { beatNo = n; onBeat(n); }
+
+  for (const e of enemies) {
+    if (e.ghost > 0) continue;
+    const [ex, ey] = epos(e), d = Math.hypot(ex - player.x, ey - player.y);
+    if (d < 0.58) hurt();
+    else if (e.type === 'pul' && tGame - e.burst < BEAT * 0.35 && d < 1.75) hurt();
+    if (over) return;
+  }
+  if (gem && Math.hypot(gem.x - player.x, gem.y - player.y) < 0.75) {
+    got++; burst(gem.x, gem.y, 14, '#7ff0ff'); rings.push({ x: gem.x, y: gem.y, r: 3, t: 0 });
+    const p = PENTA[noteNo++ % PENTA.length];
+    tone('triangle', semi(ROOT * 4, p), semi(ROOT * 4, p), 0.3, 0.35); tone('triangle', semi(ROOT * 4, p + 7), semi(ROOT * 4, p + 7), 0.3, 0.25, 0.07);
+    computeDist(); placeGem();
+  }
+  for (const p of parts) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.9; p.vy *= 0.9; }
+  parts = parts.filter(p => p.t < p.life);
+  for (const r of rings) r.t += dt;
+  rings = rings.filter(r => r.t < 0.3);
+  shake = Math.max(0, shake - dt * 22);
+
+}
+
+let best = 0;
+try { best = +localStorage.getItem('beatcave-best-items') || 0; } catch (e) {}
+function endGame(win) {
+  if (over) return; over = true; running = false;
+  const rec = got > best;
+  if (rec) { best = got; try { localStorage.setItem('beatcave-best-items', String(best)); } catch (e) {} }
+  $('ptitle').textContent = rec ? '新記録' : 'やられた';
+  $('pbody').innerHTML = `<p>アイテム <b>${got}</b>　生存 <b>${fmt(tGame)}</b>　敵の数 <b>${enemies.length}</b></p><p>ベスト <b>${best}個</b></p>`;
+  $('start').textContent = 'もう一度';
+  $('overlay').style.display = 'flex';
+}
+const fmt = s => `${(s / 60) | 0}:${String((s % 60) | 0).padStart(2, '0')}`;
+
+/* ---------- draw ---------- */
+function draw() {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
+  g.setTransform(1, 0, 0, 1, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  const px = player.x, py = player.y;
+  const pulse = Math.exp(-((tGame % BEAT) / BEAT) * 5);
+
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = idx(x, y), near = Math.hypot(x + 0.5 - px, y + 0.5 - py);
+    if (open[i]) {
+      const a = lit[i] ? Math.max(0, Math.min(1, (tGame - litAt[i]) / 0.25)) : 0;
+      if (a > 0) {
+        const fresh = 1 - Math.min(1, (tGame - litAt[i]) / 0.7);
+        g.fillStyle = `rgba(${(54 + fresh * 150 + pulse * 8) | 0},${(45 + fresh * 120 + pulse * 5) | 0},${(34 + fresh * 40) | 0},${a})`;
+        g.fillRect(x * T, y * T, T, T);
+      } else if (near < 3.4) { g.fillStyle = '#17151d'; g.fillRect(x * T, y * T, T, T); }
+    } else {
+      let nl = false;
+      for (let dy = -1; dy <= 1 && !nl; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < W && ny < H && lit[idx(nx, ny)] && tGame >= litAt[idx(nx, ny)]) { nl = true; break; }
+      }
+      if (nl) { g.fillStyle = '#8a7358'; g.fillRect(x * T, y * T, T, T); g.fillStyle = '#6a573f'; g.fillRect(x * T, y * T + T - 5, T, 5); }
+      else if (near < 3.4) { g.fillStyle = '#2a2632'; g.fillRect(x * T, y * T, T, T); }
+    }
+  }
+  if (litCount / openCount > 0.8 && !clearing) {
+    g.fillStyle = `rgba(120,160,255,${0.2 + 0.2 * pulse})`;
+    for (let i = 0; i < W * H; i++) if (open[i] && !lit[i]) g.fillRect((i % W) * T + 6, ((i / W) | 0) * T + 6, T - 12, T - 12);
+  }
+
+  if (gem) {
+    const X = gem.x * T, Y = gem.y * T - pulse * 3, a = tGame * 1.5;
+    g.strokeStyle = `rgba(127,240,255,${0.25 + 0.5 * pulse})`; g.lineWidth = 2;
+    g.beginPath(); g.arc(X, gem.y * T, 12 + (1 - pulse) * 14, 0, 6.283); g.stroke();
+    g.fillStyle = '#7ff0ff'; g.beginPath();
+    for (let k = 0; k < 8; k++) { const r = k % 2 ? 4 : 10, b = a + k * 0.7854; g[k ? 'lineTo' : 'moveTo'](X + Math.cos(b) * r, Y + Math.sin(b) * r); }
+    g.fill();
+  }
+  for (const it of items) {
+    if (!lit[idx(it.x | 0, it.y | 0)]) continue;
+    const X = it.x * T, Y = it.y * T - pulse * 2;
+    if (it.kind === 'torch') { g.fillStyle = '#b07a3a'; g.fillRect(X - 2, Y - 2, 4, 9); g.fillStyle = '#ffd27a'; g.beginPath(); g.arc(X, Y - 4, 4, 0, 6.283); g.fill(); }
+    else { g.fillStyle = '#ff6b81'; g.beginPath(); g.arc(X - 3, Y - 2, 4, 0, 6.283); g.arc(X + 3, Y - 2, 4, 0, 6.283); g.fill(); g.beginPath(); g.moveTo(X - 7, Y); g.lineTo(X, Y + 8); g.lineTo(X + 7, Y); g.fill(); }
+  }
+  for (const r of rings) {
+    const k = r.t / 0.3;
+    g.strokeStyle = `rgba(255,225,160,${1 - k})`; g.lineWidth = 3 * (1 - k) + 1;
+    g.beginPath(); g.arc(r.x * T, r.y * T, r.r * T * (0.35 + 0.65 * k), 0, 6.283); g.stroke();
+  }
+
+  for (const e of enemies) {
+    const [ex, ey, k] = epos(e), near = Math.hypot(ex - px, ey - py);
+    const vis = true;
+    const hopY = k < 1 ? Math.sin(k * 3.1416) * 5 : 0, X = ex * T, Y = ey * T - hopY, R = 7;
+    if (e.ghost > 0) {
+      g.strokeStyle = COL[e.type]; g.globalAlpha = 0.35 + 0.45 * pulse; g.lineWidth = 2;
+      g.beginPath(); g.arc(X, Y, R + e.ghost * 2.5, 0, 6.283); g.stroke(); g.globalAlpha = 1;
+      continue;
+    }
+    if (!vis) {
+      if (near < 9) { g.fillStyle = `rgba(255,60,60,${0.8 * (1 - near / 9)})`; g.fillRect(X - 4, Y - 2, 3, 3); g.fillRect(X + 1, Y - 2, 3, 3); }
+      continue;
+    }
+    if (e.type === 'chg' && e.tel) {            // show the dash lane before it happens
+      g.fillStyle = `rgba(224,82,77,${0.25 + 0.2 * pulse})`;
+      let nx = e.x, ny = e.y;
+      for (let s = 0; s < 5 && isOpen(nx + e.dx, ny + e.dy); s++) { nx += e.dx; ny += e.dy; g.fillRect(nx * T + 2, ny * T + 2, T - 4, T - 4); }
+    }
+    if (e.type === 'pul') {
+      const bt = (tGame - e.burst) / (BEAT * 0.35);
+      if (bt < 1) { g.fillStyle = `rgba(240,154,62,${0.55 * (1 - bt * 0.5)})`; g.beginPath(); g.arc(X, Y, 1.75 * T, 0, 6.283); g.fill(); }
+      else if (e.tel) { g.strokeStyle = `rgba(240,154,62,${0.5 + 0.4 * pulse})`; g.lineWidth = 2; g.beginPath(); g.arc(X, Y, 1.75 * T * (1 - 0.5 * ((tGame % BEAT) / BEAT)), 0, 6.283); g.stroke(); }
+    }
+    g.fillStyle = (e.tel && pulse > 0.4) ? '#fff' : COL[e.type];
+    g.beginPath();
+    if (e.type === 'loop') { g.moveTo(X, Y - R - 1); g.lineTo(X + R + 1, Y); g.lineTo(X, Y + R + 1); g.lineTo(X - R - 1, Y); }
+    else if (e.type === 'chg') { const a = Math.atan2(e.dy, e.dx || (e.dy ? 0 : 1)); for (let s = 0; s < 3; s++) { const b = a + s * 2.094; g[s ? 'lineTo' : 'moveTo'](X + Math.cos(b) * (R + 2), Y + Math.sin(b) * (R + 2)); } }
+    else if (e.type === 'pul') g.rect(X - R, Y - R, R * 2, R * 2);
+    else g.arc(X, Y, R, 0, 6.283);
+    g.fill();
+    if (e.type === 'pat' || e.type === 'loop') { g.fillStyle = 'rgba(0,0,0,.55)'; g.beginPath(); g.arc(X + e.dx * 4, Y + e.dy * 4, 2, 0, 6.283); g.fill(); }
+    if (e.type === 'chs') { g.fillStyle = '#fff'; g.fillRect(X - 4, Y - 2, 3, 3); g.fillRect(X + 1, Y - 2, 3, 3); }
+  }
+
+  for (const p of parts) { g.globalAlpha = 1 - p.t / p.life; g.fillStyle = p.col; g.fillRect(p.x * T - 2, p.y * T - 2, 4, 4); }
+  g.globalAlpha = 1;
+
+  const X = px * T, Y = py * T - pulse * 3;
+  // always-on halo so the player never blends into the crowd
+  const halo = g.createRadialGradient(px * T, py * T, 4, px * T, py * T, 26);
+  halo.addColorStop(0, 'rgba(255,255,255,.38)'); halo.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = halo; g.beginPath(); g.arc(px * T, py * T, 26, 0, 6.283); g.fill();
+  g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 1.5;
+  g.beginPath(); g.arc(px * T, py * T, 12, 0, 6.283); g.stroke();
+  // opening seconds: rings close in on the player, with a label
+  if (tGame < 3.5) {
+    const fade = Math.min(1, (3.5 - tGame) / 0.8);
+    for (let k = 0; k < 3; k++) {
+      const ph = ((tGame / BEAT) + k / 3) % 1;
+      g.strokeStyle = `rgba(255,255,255,${0.85 * ph * fade})`; g.lineWidth = 3;
+      g.beginPath(); g.arc(px * T, py * T, 150 - ph * 134, 0, 6.283); g.stroke();
+    }
+    g.font = 'bold 16px sans-serif'; g.textAlign = 'center';
+    g.lineWidth = 4; g.strokeStyle = `rgba(0,0,0,${0.8 * fade})`; g.fillStyle = `rgba(255,255,255,${fade})`;
+    const ly = py * T < 60 ? py * T + 38 : py * T - 24;
+    g.strokeText('ここ', px * T, ly); g.fillText('ここ', px * T, ly);
+  }
+  if (!(player.inv > 0 && ((tGame * 16) | 0) % 2)) {
+    g.fillStyle = '#f4ecd8'; g.beginPath(); g.arc(X, Y, 6 + pulse * 1.5, 0, 6.283); g.fill();
+    g.fillStyle = '#ffb347'; g.beginPath(); g.arc(X + player.fx * 8, Y + player.fy * 8, 2.5, 0, 6.283); g.fill();
+  }
+
+  $('pct').textContent = enemies.length;
+  $('time').textContent = fmt(tGame);
+  $('hpbar').firstElementChild.style.width = Math.max(0, player.hp) / 3 * 100 + '%';
+  $('lv').textContent = best ? best + '個' : '-';
+  $('got').textContent = got;
+}
+
+/* ---------- loop & input ---------- */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (running) update(dt);
+  if (player) draw();
+  requestAnimationFrame(frame);
+}
+function startGame() { initAudio(); reset(); running = true; $('overlay').style.display = 'none'; }
+$('start').addEventListener('click', startGame);
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+  if (e.repeat) return;
+  keys[k] = true;
+  if (k === 'enter' && !running) startGame();
+  else if (k === 'r' && ac) startGame();
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+reset(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
