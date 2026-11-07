@@ -31,6 +31,7 @@
   .stage { text-align: left; line-height: 1.4; }
   .stage small { display: block; font-weight: 400; font-size: 12px; color: #5a4a20; }
   .stage.sel { outline: 2px solid #fff; outline-offset: 2px; }
+  .panel .hint { margin-top: 12px; font-size: 12px; color: #8f879c; }
   #help { font-size: 12px; color: #8f879c; padding: 6px 12px 10px; text-align: center; }
 </style>
 </head>
@@ -52,6 +53,7 @@
       <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動　<kbd>Esc</kbd> ポーズ　<kbd>R</kbd> やり直し　　音が出ます</p>
     </div>
     <div id="stages"></div>
+    <p class="hint"><kbd>←</kbd><kbd>→</kbd> か数字でステージを選び <kbd>Enter</kbd> で開始</p>
   </div></div>
   <div id="pause"><div class="panel">
     <h1>ポーズ</h1>
@@ -524,10 +526,11 @@ function frame(now) {
   if (player) draw();
   requestAnimationFrame(frame);
 }
-let selStage = STAGES.cave;
+const STAGE_LIST = Object.values(STAGES);
+let selStage = STAGE_LIST[0];
+function selectStage(st) { selStage = st; for (const o of STAGE_LIST) o.btn.classList.toggle('sel', o === st); }
 function startGame(st = selStage) {
-  selStage = st;
-  for (const o of Object.values(STAGES)) o.btn.classList.toggle('sel', o === st);
+  selectStage(st);
   initAudio(); reset(st); running = true; setPaused(false); $('overlay').style.display = 'none';
 }
 function setPaused(on) {
@@ -554,6 +557,12 @@ addEventListener('keydown', e => {
   if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
   if (e.repeat) return;
   if (!paused) keys[k] = true;
+  if (!running) {                               // stage select: arrows / WASD move, digits pick, Enter starts
+    const i = STAGE_LIST.indexOf(selStage);
+    if (k === 'arrowleft' || k === 'arrowup' || k === 'a' || k === 'w') selectStage(STAGE_LIST[(i + STAGE_LIST.length - 1) % STAGE_LIST.length]);
+    else if (k === 'arrowright' || k === 'arrowdown' || k === 'd' || k === 's') selectStage(STAGE_LIST[(i + 1) % STAGE_LIST.length]);
+    else if (k >= '1' && k <= '9' && STAGE_LIST[k - 1]) selectStage(STAGE_LIST[k - 1]);
+  }
   if (k === 'enter' && !running) startGame();
   else if (k === 'r' && ac) startGame();
   else if ((k === 'escape' || k === 'p') && running && !over) setPaused(!paused);
