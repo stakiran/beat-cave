@@ -44,7 +44,7 @@
     <div id="pbody">
       <p>拍で動く群れを縫って、アイテムをいくつ取れるか。</p>
       <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動だけ。敵は倒せない。避けるだけ。</p>
-      <p>敵はすべて拍に合わせて決まった型で動く。緑は往復、青は周回、赤は予告してから突進、橙はその場で脈動、紫だけがゆっくり追ってくる。</p>
+      <p>敵はすべて拍に合わせて決まった型で動く。<span id="types"></span></p>
       <p>敵は少しずつ、ランダムな場所にランダムな型で増えていく。現れる前に4拍のあいだ輪郭で予告される。アイテムは洞窟のどこかに1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。<kbd>R</kbd> やり直し。音が出ます。</p>
     </div>
     <button id="start">はじめる</button>
@@ -68,6 +68,7 @@ const CFG = {
 };
 const W = CFG.cave.w, H = CFG.cave.h, T = CFG.cave.tile;
 const BEAT = 60 / CFG.bpm;
+const pulseNow = () => Math.exp(-((tGame % BEAT) / BEAT) * 5); // 1 on the beat, fading to ~0 before the next
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const $ = id => document.getElementById(id);
 const PENTA = [0, 3, 5, 7, 10, 12, 15, 17];
@@ -162,8 +163,101 @@ function computeDist() {
   }
 }
 
-const LOOP = [[1,0],[1,0],[0,1],[0,1],[-1,0],[-1,0],[0,-1],[0,-1]];
-const COL = { pat: '#5fae57', loop: '#4d8fe0', chg: '#e0524d', pul: '#f09a3e', chs: '#9a5fd0' };
+/* ---------- enemy types ----------
+ * Everything about one type lives in one entry. To add a type, add an entry here; nothing else needs to know.
+ *   jp, desc        : colour word and one-line behaviour for the help text
+ *   color, share    : body colour; spawn weight (weights are normalised, any scale works)
+ *   period          : phase length in beats. beat() receives ph = (beat + e.off) % period
+ *   init(e)         : extra per-enemy state at spawn (optional)
+ *   beat(e, c)      : runs once per beat with c = { n, ph, d, px, py } (d = distance to player).
+ *                     Return a sound key when the enemy does something audible (true means 'act'), else falsy.
+ *   sounds          : { key: (vol, n) => ... } played once per beat for the nearest enemy that returned that key
+ *   hits(e, d)      : extra hit test besides body contact (optional)
+ *   tele(e, X, Y)   : telegraph drawn under the body (optional)
+ *   body(e, X, Y, R): outline path of the body; default is a circle (optional)
+ *   mark(e, X, Y)   : marks drawn over the body (optional)
+ * Common per-enemy fields: x,y (tile) fx,fy,mt,md (hop tween) off (phase offset) dx,dy (facing) tel (flash white) ghost
+ */
+const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
+function facingDot(e, X, Y) { g.fillStyle = 'rgba(0,0,0,.55)'; g.beginPath(); g.arc(X + e.dx * 4, Y + e.dy * 4, 2, 0, 6.283); g.fill(); }
+const TYPES = {
+  pat: { jp: '緑', desc: '往復', color: '#5fae57', share: 0.44, period: 4,
+    init(e) { if (Math.random() < 0.5) e.dx = Math.random() < 0.5 ? 1 : -1; else e.dy = Math.random() < 0.5 ? 1 : -1; },
+    beat(e) {                                   // back and forth, one tile a beat
+      if (!isOpen(e.x + e.dx, e.y + e.dy)) { e.dx = -e.dx; e.dy = -e.dy; }
+      if (!isOpen(e.x + e.dx, e.y + e.dy)) return false;
+      stepTo(e, e.x + e.dx, e.y + e.dy); return true;
+    },
+    sounds: { act: v => noise(0.03, 0.22 * v, 7000) },
+    mark: facingDot,
+  },
+  loop: { jp: '青', desc: '周回', color: '#4d8fe0', share: 0.20, period: 8,
+    path: [[1,0],[1,0],[0,1],[0,1],[-1,0],[-1,0],[0,-1],[0,-1]],
+    beat(e, c) {                                // walks a small square; marks time at a wall
+      [e.dx, e.dy] = this.path[c.ph];
+      if (!isOpen(e.x + e.dx, e.y + e.dy)) return false;
+      stepTo(e, e.x + e.dx, e.y + e.dy); return true;
+    },
+    sounds: { act: (v, n) => { const p = PENTA[[0, 2, 4, 2][n % 4]]; tone('square', semi(ROOT * 4, p), semi(ROOT * 4, p), 0.08, 0.07 * v); } },
+    body(e, X, Y, R) { g.moveTo(X, Y - R - 1); g.lineTo(X + R + 1, Y); g.lineTo(X, Y + R + 1); g.lineTo(X - R - 1, Y); },
+    mark: facingDot,
+  },
+  pul: { jp: '橙', desc: 'その場で脈動', color: '#f09a3e', share: 0.13, period: 4, radius: 1.75, burstBeats: 0.35,
+    init(e) { e.burst = -9; },
+    beat(e, c) {                                // stays put; warns on ph 3, swells on ph 0
+      e.tel = c.ph === 3;
+      if (c.ph !== 0) return false;
+      e.burst = tGame; return true;
+    },
+    sounds: { act: v => { tone('sine', 80, 30, 0.4, 0.8 * v); noise(0.18, 0.2 * v, 500); } },
+    hits(e, d) { return tGame - e.burst < BEAT * this.burstBeats && d < this.radius; },
+    tele(e, X, Y) {
+      const bt = (tGame - e.burst) / (BEAT * this.burstBeats), r = this.radius * T;
+      if (bt < 1) { g.fillStyle = `rgba(240,154,62,${0.55 * (1 - bt * 0.5)})`; g.beginPath(); g.arc(X, Y, r, 0, 6.283); g.fill(); }
+      else if (e.tel) { g.strokeStyle = `rgba(240,154,62,${0.5 + 0.4 * pulseNow()})`; g.lineWidth = 2; g.beginPath(); g.arc(X, Y, r * (1 - 0.5 * ((tGame % BEAT) / BEAT)), 0, 6.283); g.stroke(); }
+    },
+    body(e, X, Y, R) { g.rect(X - R, Y - R, R * 2, R * 2); },
+  },
+  chg: { jp: '赤', desc: '予告してから突進', color: '#e0524d', share: 0.13, period: 4, range: 11, dash: 5,
+    beat(e, c) {                                // rest, rest, aim, dash
+      if (c.ph === 2 && c.d < this.range) {
+        const ax = c.px - (e.x + 0.5), ay = c.py - (e.y + 0.5);
+        if (Math.abs(ax) > Math.abs(ay)) { e.dx = Math.sign(ax); e.dy = 0; } else { e.dx = 0; e.dy = Math.sign(ay); }
+        e.tel = true; return 'aim';
+      }
+      if (c.ph === 3 && e.tel) {
+        let nx = e.x, ny = e.y;
+        for (let k = 0; k < this.dash && isOpen(nx + e.dx, ny + e.dy); k++) { nx += e.dx; ny += e.dy; }
+        stepTo(e, nx, ny, 0.45); e.tel = false; return true;
+      }
+      e.tel = false; return false;
+    },
+    sounds: { act: v => { noise(0.12, 0.4 * v, 1800); tone('square', 300, 90, 0.12, 0.12 * v); },
+              aim: v => tone('square', 400, 800, 0.2, 0.09 * v) },
+    tele(e, X, Y) {                             // show the dash lane before it happens
+      if (!e.tel) return;
+      g.fillStyle = `rgba(224,82,77,${0.25 + 0.2 * pulseNow()})`;
+      let nx = e.x, ny = e.y;
+      for (let k = 0; k < this.dash && isOpen(nx + e.dx, ny + e.dy); k++) { nx += e.dx; ny += e.dy; g.fillRect(nx * T + 2, ny * T + 2, T - 4, T - 4); }
+    },
+    body(e, X, Y, R) { const a = Math.atan2(e.dy, e.dx || (e.dy ? 0 : 1)); for (let k = 0; k < 3; k++) { const b = a + k * 2.094; g[k ? 'lineTo' : 'moveTo'](X + Math.cos(b) * (R + 2), Y + Math.sin(b) * (R + 2)); } },
+  },
+  chs: { jp: '紫', desc: 'ゆっくり追ってくる（追うのはこの型だけ）', color: '#9a5fd0', share: 0.10, period: 4, range: 14,
+    beat(e, c) {                                // every other beat, one step down the path gradient
+      const dd = dist[idx(e.x, e.y)];
+      if (c.ph % 2 || dd <= 0 || dd >= this.range) return false;
+      let bd = dd, bx = e.x, by = e.y;
+      for (const [dx, dy] of DIRS) {
+        const nd = isOpen(e.x + dx, e.y + dy) ? dist[idx(e.x + dx, e.y + dy)] : -1;
+        if (nd >= 0 && nd < bd) { bd = nd; bx = e.x + dx; by = e.y + dy; }
+      }
+      stepTo(e, bx, by, 0.4); return true;
+    },
+    sounds: { act: (v, n) => tone('sawtooth', semi(ROOT / 2, n % 4 ? 0 : 7), semi(ROOT / 2, 0), 0.25, 0.22 * v) },
+    mark(e, X, Y) { g.fillStyle = '#fff'; g.fillRect(X - 4, Y - 2, 3, 3); g.fillRect(X + 1, Y - 2, 3, 3); },
+  },
+};
+const MIX = Object.entries(TYPES).map(([k, t]) => [k, t.share]), MIX_TOTAL = MIX.reduce((a, [, w]) => a + w, 0);
 
 function reset() {
   genCave();
@@ -187,17 +281,17 @@ function placeGem() {
   }
 }
 
-const MIX = [['pat', 0.44], ['loop', 0.2], ['pul', 0.13], ['chg', 0.13], ['chs', 0.10]];
 // enemies arrive at random: random tile, random type, announced as a ghost for a few beats
 function addEnemy(ghost) {
   for (let k = 0; k < 80; k++) {
     const i = (Math.random() * W * H) | 0;
     if (!open[i] || dist[i] < CFG.spawn.minDist) continue;
-    let r = Math.random(), type = 'pat';
-    for (const [t, f] of MIX) { if (r < f) { type = t; break; } r -= f; }
+    let r = Math.random() * MIX_TOTAL, type = MIX[0][0];
+    for (const [t, w] of MIX) { if (r < w) { type = t; break; } r -= w; }
     const x = i % W, y = (i / W) | 0;
-    const e = { type, x, y, fx: x, fy: y, mt: -9, md: 0.3, off: (Math.random() * 8) | 0, dx: 0, dy: 0, tel: false, burst: -9, ghost };
-    if (type === 'pat') { if (Math.random() < 0.5) e.dx = Math.random() < 0.5 ? 1 : -1; else e.dy = Math.random() < 0.5 ? 1 : -1; }
+    const t = TYPES[type];
+    const e = { type, x, y, fx: x, fy: y, mt: -9, md: 0.3, off: (Math.random() * t.period) | 0, dx: 0, dy: 0, tel: false, ghost };
+    t.init?.(e);
     enemies.push(e); return;
   }
 }
@@ -217,55 +311,20 @@ function stepTo(e, nx, ny, md = 0.3) { e.fx = e.x; e.fy = e.y; e.x = nx; e.y = n
 
 /* ---------- every enemy moves on the beat, each type in its own pattern ---------- */
 function onBeat(n) {
-  const near = { pat: 99, loop: 99, chg: 99, pul: 99, chs: 99 }, ev = {};
-  const px = player.x, py = player.y;
+  const px = player.x, py = player.y, near = {};   // nearest distance per "type:sound" this beat
   const every = n < CFG.spawn.lateFromBeat ? CFG.spawn.everyEarly : CFG.spawn.everyLate;
   if (n > 0 && n % every === 0) addEnemy(CFG.spawn.ghostBeats);
   for (const e of enemies) {
-    if (e.ghost > 0) { if (--e.ghost === 0) burst(e.x + 0.5, e.y + 0.5, 6, COL[e.type]); continue; }
-    const d = Math.hypot(e.x + 0.5 - px, e.y + 0.5 - py), ph = (n + e.off) % 4;
-    let acted = false;
-    if (e.type === 'pat') {                       // back and forth, one tile a beat
-      if (!isOpen(e.x + e.dx, e.y + e.dy)) { e.dx = -e.dx; e.dy = -e.dy; }
-      if (isOpen(e.x + e.dx, e.y + e.dy)) { stepTo(e, e.x + e.dx, e.y + e.dy); acted = true; }
-    } else if (e.type === 'loop') {               // walks a small square
-      const [dx, dy] = LOOP[(n + e.off) % 8]; e.dx = dx; e.dy = dy;
-      if (isOpen(e.x + dx, e.y + dy)) { stepTo(e, e.x + dx, e.y + dy); acted = true; }
-    } else if (e.type === 'chg') {                // rest, rest, aim, dash
-      if (ph === 2 && d < 11) {
-        const ax = px - (e.x + 0.5), ay = py - (e.y + 0.5);
-        if (Math.abs(ax) > Math.abs(ay)) { e.dx = Math.sign(ax); e.dy = 0; } else { e.dx = 0; e.dy = Math.sign(ay); }
-        e.tel = true; ev.aim = Math.min(ev.aim ?? 99, d);
-      } else if (ph === 3 && e.tel) {
-        let nx = e.x, ny = e.y;
-        for (let k = 0; k < 5 && isOpen(nx + e.dx, ny + e.dy); k++) { nx += e.dx; ny += e.dy; }
-        stepTo(e, nx, ny, 0.45); e.tel = false; acted = true;
-      } else e.tel = false;
-    } else if (e.type === 'pul') {                // stays put; swells on its fourth beat
-      e.tel = ph === 3;
-      if (ph === 0) { e.burst = tGame; acted = true; }
-    } else if (e.type === 'chs') {                // the only one that follows, every other beat
-      const dd = dist[idx(e.x, e.y)];
-      if (ph % 2 === 0 && dd > 0 && dd < 14) {
-        let bd = dd, bx = e.x, by = e.y;
-        for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-          const nd = isOpen(e.x + dx, e.y + dy) ? dist[idx(e.x + dx, e.y + dy)] : -1;
-          if (nd >= 0 && nd < bd) { bd = nd; bx = e.x + dx; by = e.y + dy; }
-        }
-        stepTo(e, bx, by, 0.4); acted = true;
-      }
-    }
-    if (acted && d < near[e.type]) near[e.type] = d;
+    const t = TYPES[e.type];
+    if (e.ghost > 0) { if (--e.ghost === 0) burst(e.x + 0.5, e.y + 0.5, 6, t.color); continue; }
+    const d = Math.hypot(e.x + 0.5 - px, e.y + 0.5 - py);
+    const key = t.beat(e, { n, ph: (n + e.off) % t.period, d, px, py });
+    if (key) { const k = e.type + ':' + (key === true ? 'act' : key); if (!(k in near) || d < near[k]) near[k] = d; }
   }
   // the crowd nearby is what you hear
   const vol = d => Math.max(0, 1 - d / CFG.audio.hearDist);
-  tone('sine', 110, 45, 0.12, 0.28);
-  if (vol(near.pat)) noise(0.03, 0.22 * vol(near.pat), 7000);
-  if (vol(near.loop)) { const p = PENTA[[0, 2, 4, 2][n % 4]]; tone('square', semi(ROOT * 4, p), semi(ROOT * 4, p), 0.08, 0.07 * vol(near.loop)); }
-  if (vol(near.chs)) tone('sawtooth', semi(ROOT / 2, n % 4 ? 0 : 7), semi(ROOT / 2, 0), 0.25, 0.22 * vol(near.chs));
-  if (vol(near.pul)) { tone('sine', 80, 30, 0.4, 0.8 * vol(near.pul)); noise(0.18, 0.2 * vol(near.pul), 500); }
-  if (vol(near.chg)) { noise(0.12, 0.4 * vol(near.chg), 1800); tone('square', 300, 90, 0.12, 0.12 * vol(near.chg)); }
-  if (ev.aim !== undefined && vol(ev.aim)) tone('square', 400, 800, 0.2, 0.09 * vol(ev.aim));
+  tone('sine', 110, 45, 0.12, 0.28);                                                    // kick on every beat
+  for (const k in near) { const v = vol(near[k]); if (v > 0) { const [t, snd] = k.split(':'); TYPES[t].sounds[snd](v, n); } }
 
   const c = enemies.length, [L1, L2, L3, L4] = CFG.audio.layers;
   if (c >= L1) { const b = [0, 0, 7, 0, 5, 0, 3, 7][n % 8]; tone('sawtooth', semi(ROOT / 2, b), semi(ROOT / 2, b), 0.2, 0.13); }
@@ -307,8 +366,8 @@ function update(dt) {
   for (const e of enemies) {
     if (e.ghost > 0) continue;
     const [ex, ey] = epos(e), d = Math.hypot(ex - player.x, ey - player.y);
-    if (d < CFG.player.hitDist) hurt();
-    else if (e.type === 'pul' && tGame - e.burst < BEAT * 0.35 && d < 1.75) hurt();
+    const t = TYPES[e.type];
+    if (d < CFG.player.hitDist || (t.hits && t.hits(e, d))) hurt();
     if (over) return;
   }
   if (gem && Math.hypot(gem.x - player.x, gem.y - player.y) < CFG.gem.pickDist) {
@@ -344,7 +403,7 @@ function draw() {
   g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
   g.setTransform(1, 0, 0, 1, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
   const px = player.x, py = player.y;
-  const pulse = Math.exp(-((tGame % BEAT) / BEAT) * 5);
+  const pulse = pulseNow();
 
   // floor breathes with the beat; walls are drawn only where they border the cave, the rock beyond stays black
   const floor = `rgb(${(54 + pulse * 8) | 0},${(45 + pulse * 5) | 0},34)`;
@@ -370,32 +429,19 @@ function draw() {
   }
 
   for (const e of enemies) {
-    const [ex, ey, k] = epos(e);
+    const t = TYPES[e.type], [ex, ey, k] = epos(e);
     const hopY = k < 1 ? Math.sin(k * 3.1416) * 5 : 0, X = ex * T, Y = ey * T - hopY, R = 7;
-    if (e.ghost > 0) {
-      g.strokeStyle = COL[e.type]; g.globalAlpha = 0.35 + 0.45 * pulse; g.lineWidth = 2;
+    if (e.ghost > 0) {                          // announced, not live yet: shrinking outline
+      g.strokeStyle = t.color; g.globalAlpha = 0.35 + 0.45 * pulse; g.lineWidth = 2;
       g.beginPath(); g.arc(X, Y, R + e.ghost * 2.5, 0, 6.283); g.stroke(); g.globalAlpha = 1;
       continue;
     }
-    if (e.type === 'chg' && e.tel) {            // show the dash lane before it happens
-      g.fillStyle = `rgba(224,82,77,${0.25 + 0.2 * pulse})`;
-      let nx = e.x, ny = e.y;
-      for (let s = 0; s < 5 && isOpen(nx + e.dx, ny + e.dy); s++) { nx += e.dx; ny += e.dy; g.fillRect(nx * T + 2, ny * T + 2, T - 4, T - 4); }
-    }
-    if (e.type === 'pul') {
-      const bt = (tGame - e.burst) / (BEAT * 0.35);
-      if (bt < 1) { g.fillStyle = `rgba(240,154,62,${0.55 * (1 - bt * 0.5)})`; g.beginPath(); g.arc(X, Y, 1.75 * T, 0, 6.283); g.fill(); }
-      else if (e.tel) { g.strokeStyle = `rgba(240,154,62,${0.5 + 0.4 * pulse})`; g.lineWidth = 2; g.beginPath(); g.arc(X, Y, 1.75 * T * (1 - 0.5 * ((tGame % BEAT) / BEAT)), 0, 6.283); g.stroke(); }
-    }
-    g.fillStyle = (e.tel && pulse > 0.4) ? '#fff' : COL[e.type];
+    if (t.tele) t.tele(e, X, Y);
+    g.fillStyle = (e.tel && pulse > 0.4) ? '#fff' : t.color;
     g.beginPath();
-    if (e.type === 'loop') { g.moveTo(X, Y - R - 1); g.lineTo(X + R + 1, Y); g.lineTo(X, Y + R + 1); g.lineTo(X - R - 1, Y); }
-    else if (e.type === 'chg') { const a = Math.atan2(e.dy, e.dx || (e.dy ? 0 : 1)); for (let s = 0; s < 3; s++) { const b = a + s * 2.094; g[s ? 'lineTo' : 'moveTo'](X + Math.cos(b) * (R + 2), Y + Math.sin(b) * (R + 2)); } }
-    else if (e.type === 'pul') g.rect(X - R, Y - R, R * 2, R * 2);
-    else g.arc(X, Y, R, 0, 6.283);
+    if (t.body) t.body(e, X, Y, R); else g.arc(X, Y, R, 0, 6.283);
     g.fill();
-    if (e.type === 'pat' || e.type === 'loop') { g.fillStyle = 'rgba(0,0,0,.55)'; g.beginPath(); g.arc(X + e.dx * 4, Y + e.dy * 4, 2, 0, 6.283); g.fill(); }
-    if (e.type === 'chs') { g.fillStyle = '#fff'; g.fillRect(X - 4, Y - 2, 3, 3); g.fillRect(X + 1, Y - 2, 3, 3); }
+    if (t.mark) t.mark(e, X, Y);
   }
 
   for (const p of parts) { g.globalAlpha = 1 - p.t / p.life; g.fillStyle = p.col; g.fillRect(p.x * T - 2, p.y * T - 2, 4, 4); }
@@ -453,6 +499,7 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+$('types').innerHTML = Object.values(TYPES).map(t => `<span style="color:${t.color}">${t.jp}</span>は${t.desc}`).join('、') + '。';
 reset(); requestAnimationFrame(frame);
 })();
 </script>
