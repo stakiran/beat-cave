@@ -21,7 +21,7 @@
 - `update`：移動、当たり判定、アイテム取得
 - `endGame`
 - `draw`
-- ループと入力。`startGame` `setPaused`（Esc/P、フォーカス喪失）、`toStageSelect`（ポーズ中の Q）。開始時に `TYPES` から説明文の型一覧を、`STAGES` からステージボタンを生成
+- ループと入力。`startGame` `setPaused`（Esc/P、フォーカス喪失）、`toStageSelect`（ポーズ中の Q）。開始時に `STAGES` からステージボタンを生成
 
 ## 敵の型を足す
 
@@ -29,7 +29,6 @@
 
 | 項目 | 役割 |
 |---|---|
-| `jp` `desc` | ポーズ画面の型一覧用。色の名前と一行の説明 |
 | `color` `share` | 色と出現の重み |
 | `period` | 周期（拍）。`beat` に渡る `ph` は `(拍 + off) % period`。位相ずれ `off` は 0〜period-1 の乱数 |
 | `init(e)` | 出現時に型固有の状態を足す（任意） |
