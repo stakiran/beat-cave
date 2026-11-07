@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>湧き潰しビート 試作6</title>
+<title>ビート洞窟</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -14,8 +14,7 @@
     padding: 8px 12px; font-size: 14px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
   #hud b { font-size: 18px; color: #ffd27a; }
   .bar { width: 150px; height: 10px; background: #26222e; border-radius: 5px; overflow: hidden; display: inline-block; vertical-align: middle; }
-  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#ffb347,#ff5fa2); }
-  #hpbar > i { background: #e5484d; }
+  .bar > i { display: block; height: 100%; width: 0; background: #e5484d; }
   #wrap { position: relative; width: 100%; max-width: 1120px; flex: 1; min-height: 0; display: flex; justify-content: center; }
   canvas { max-width: 100%; max-height: 100%; aspect-ratio: 1120 / 720; background: #000; border-radius: 6px; }
   #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -28,19 +27,15 @@
     border: 0; border-radius: 8px; padding: 10px 22px; cursor: pointer; }
   button:hover { background: #ffe0a3; }
   #help { font-size: 12px; color: #8f879c; padding: 6px 12px 10px; text-align: center; }
-  .opt { display: block; padding: 8px 12px; margin: 6px 0; border: 1px solid #3a3346; border-radius: 8px; font-size: 14px; }
-  .opt.sel { border-color: #ffd27a; background: #2a2433; }
-  .opt small { color: #a79fb5; display: block; }
 </style>
 </head>
 <body>
 <div id="hud">
   <span>アイテム <b id="got">0</b></span>
-  <span>敵 <b id="pct">0</b></span>
+  <span>敵 <b id="enemies">0</b></span>
   <span>時間 <b id="time">0:00</b></span>
   <span>HP <span class="bar" id="hpbar"><i></i></span></span>
-  <span>ベスト <b id="lv">-</b></span>
-  <span id="wname"></span>
+  <span>ベスト <b id="best">-</b></span>
 </div>
 <div id="wrap">
   <canvas id="c" width="1120" height="720"></canvas>
@@ -67,9 +62,9 @@ const $ = id => document.getElementById(id);
 const PENTA = [0, 3, 5, 7, 10, 12, 15, 17];
 const ROOT = 110;
 const idx = (x, y) => y * W + x;
-let open, lit, litAt, dist, openCount, litCount, lightBank = 0;
-let player, enemies, items, parts, rings, lightR;
-let tGame, beatNo, hitsTaken, running = false, over = false, distT, shake, clearing, noteNo;
+let open, dist;
+let player, enemies, parts, rings;
+let tGame, beatNo, running = false, over = false, distT, shake, noteNo;
 const isOpen = (x, y) => x >= 0 && y >= 0 && x < W && y < H && open[idx(x, y)] === 1;
 /* ---------- audio ---------- */
 let ac = null, master = null, noiseBuf = null;
@@ -139,8 +134,7 @@ function genCave() {
       if (!a[idx(x - 1, y)] && !a[idx(x + 1, y)]) a[idx(x + 1, y)] = 1;
       if (!a[idx(x, y - 1)] && !a[idx(x, y + 1)]) a[idx(x, y + 1)] = 1;
     }
-    let cnt = 0; for (let i = 0; i < W * H; i++) cnt += a[i];
-    open = a; openCount = cnt; return;
+    open = a; return;
   }
 }
 
@@ -157,42 +151,18 @@ function computeDist() {
   }
 }
 
-// light spreads through open tiles only, so walls block it
-function lightAt(px, py, r) {
-  const sx = px | 0, sy = py | 0; if (!isOpen(sx, sy)) return 0;
-  const seen = new Set([idx(sx, sy)]); const q = [[sx, sy, 0]]; let gained = 0;
-  const maxSteps = Math.ceil(r * 1.6);
-  while (q.length) {
-    const [x, y, d] = q.shift(); const i = idx(x, y);
-    if (!lit[i]) { lit[i] = 1; litAt[i] = tGame + Math.hypot(x + 0.5 - px, y + 0.5 - py) * 0.035; litCount++; gained++; }
-    if (d >= maxSteps) continue;
-    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-      const nx = x + dx, ny = y + dy, j = idx(nx, ny);
-      if (!isOpen(nx, ny) || seen.has(j)) continue;
-      if (Math.hypot(nx + 0.5 - px, ny + 0.5 - py) > r) continue;
-      seen.add(j); q.push([nx, ny, d + 1]);
-    }
-  }
-  lightBank += gained;
-  return gained;
-}
-
-
-
 const LOOP = [[1,0],[1,0],[0,1],[0,1],[-1,0],[-1,0],[0,-1],[0,-1]];
 const COL = { pat: '#5fae57', loop: '#4d8fe0', chg: '#e0524d', pul: '#f09a3e', chs: '#9a5fd0' };
 
 function reset() {
   genCave();
-  lit = new Uint8Array(W * H); litAt = new Float32Array(W * H); dist = new Int16Array(W * H);
-  litCount = 0; enemies = []; items = []; parts = []; rings = [];
+  dist = new Int16Array(W * H);
+  enemies = []; parts = []; rings = [];
   let s; do { s = (Math.random() * W * H) | 0; } while (!open[s]);
   player = { x: (s % W) + 0.5, y: ((s / W) | 0) + 0.5, hp: 3, inv: 0, fx: 1, fy: 0 };
-  lightR = 3.0; hitsTaken = 0; noteNo = 0;
-  tGame = 0; beatNo = -1; over = false; distT = 0; shake = 0; clearing = false;
+  noteNo = 0;
+  tGame = 0; beatNo = -1; over = false; distT = 0; shake = 0;
   computeDist();
-  for (let i = 0; i < W * H; i++) if (open[i]) { lit[i] = 1; litAt[i] = -9; }
-  litCount = openCount;
   for (let k = 0; k < 35; k++) addEnemy(0);
   got = 0; placeGem();
 }
@@ -302,11 +272,11 @@ function moveCircle(o, dx, dy, r) {
   if (!hitWall(o.x, o.y + dy)) o.y += dy;
 }
 function hurt() {
-  if (player.inv > 0 || clearing) return;
-  player.hp--; hitsTaken++; player.inv = 1.3; shake = 7;
+  if (player.inv > 0) return;
+  player.hp--; player.inv = 1.3; shake = 7;
   burst(player.x, player.y, 8, '#ff8a8a');
   tone('square', 90, 40, 0.25, 0.35); noise(0.12, 0.3, 300);
-  if (player.hp <= 0) endGame(false);
+  if (player.hp <= 0) endGame();
 }
 
 function update(dt) {
@@ -321,7 +291,7 @@ function update(dt) {
   distT -= dt; if (distT <= 0) { computeDist(); distT = 0.2; }
 
   const n = Math.floor(tGame / BEAT);
-  if (n !== beatNo && !clearing) { beatNo = n; onBeat(n); }
+  if (n !== beatNo) { beatNo = n; onBeat(n); }
 
   for (const e of enemies) {
     if (e.ghost > 0) continue;
@@ -346,7 +316,7 @@ function update(dt) {
 
 let best = 0;
 try { best = +localStorage.getItem('beatcave-best-items') || 0; } catch (e) {}
-function endGame(win) {
+function endGame() {
   if (over) return; over = true; running = false;
   const rec = got > best;
   if (rec) { best = got; try { localStorage.setItem('beatcave-best-items', String(best)); } catch (e) {} }
@@ -365,28 +335,13 @@ function draw() {
   const px = player.x, py = player.y;
   const pulse = Math.exp(-((tGame % BEAT) / BEAT) * 5);
 
+  // floor breathes with the beat; walls are drawn only where they border the cave, the rock beyond stays black
+  const floor = `rgb(${(54 + pulse * 8) | 0},${(45 + pulse * 5) | 0},34)`;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const i = idx(x, y), near = Math.hypot(x + 0.5 - px, y + 0.5 - py);
-    if (open[i]) {
-      const a = lit[i] ? Math.max(0, Math.min(1, (tGame - litAt[i]) / 0.25)) : 0;
-      if (a > 0) {
-        const fresh = 1 - Math.min(1, (tGame - litAt[i]) / 0.7);
-        g.fillStyle = `rgba(${(54 + fresh * 150 + pulse * 8) | 0},${(45 + fresh * 120 + pulse * 5) | 0},${(34 + fresh * 40) | 0},${a})`;
-        g.fillRect(x * T, y * T, T, T);
-      } else if (near < 3.4) { g.fillStyle = '#17151d'; g.fillRect(x * T, y * T, T, T); }
-    } else {
-      let nl = false;
-      for (let dy = -1; dy <= 1 && !nl; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const nx = x + dx, ny = y + dy;
-        if (nx >= 0 && ny >= 0 && nx < W && ny < H && lit[idx(nx, ny)] && tGame >= litAt[idx(nx, ny)]) { nl = true; break; }
-      }
-      if (nl) { g.fillStyle = '#8a7358'; g.fillRect(x * T, y * T, T, T); g.fillStyle = '#6a573f'; g.fillRect(x * T, y * T + T - 5, T, 5); }
-      else if (near < 3.4) { g.fillStyle = '#2a2632'; g.fillRect(x * T, y * T, T, T); }
-    }
-  }
-  if (litCount / openCount > 0.8 && !clearing) {
-    g.fillStyle = `rgba(120,160,255,${0.2 + 0.2 * pulse})`;
-    for (let i = 0; i < W * H; i++) if (open[i] && !lit[i]) g.fillRect((i % W) * T + 6, ((i / W) | 0) * T + 6, T - 12, T - 12);
+    if (open[idx(x, y)]) { g.fillStyle = floor; g.fillRect(x * T, y * T, T, T); continue; }
+    let edge = false;
+    for (let dy = -1; dy <= 1 && !edge; dy++) for (let dx = -1; dx <= 1; dx++) if (isOpen(x + dx, y + dy)) { edge = true; break; }
+    if (edge) { g.fillStyle = '#8a7358'; g.fillRect(x * T, y * T, T, T); g.fillStyle = '#6a573f'; g.fillRect(x * T, y * T + T - 5, T, 5); }
   }
 
   if (gem) {
@@ -397,12 +352,6 @@ function draw() {
     for (let k = 0; k < 8; k++) { const r = k % 2 ? 4 : 10, b = a + k * 0.7854; g[k ? 'lineTo' : 'moveTo'](X + Math.cos(b) * r, Y + Math.sin(b) * r); }
     g.fill();
   }
-  for (const it of items) {
-    if (!lit[idx(it.x | 0, it.y | 0)]) continue;
-    const X = it.x * T, Y = it.y * T - pulse * 2;
-    if (it.kind === 'torch') { g.fillStyle = '#b07a3a'; g.fillRect(X - 2, Y - 2, 4, 9); g.fillStyle = '#ffd27a'; g.beginPath(); g.arc(X, Y - 4, 4, 0, 6.283); g.fill(); }
-    else { g.fillStyle = '#ff6b81'; g.beginPath(); g.arc(X - 3, Y - 2, 4, 0, 6.283); g.arc(X + 3, Y - 2, 4, 0, 6.283); g.fill(); g.beginPath(); g.moveTo(X - 7, Y); g.lineTo(X, Y + 8); g.lineTo(X + 7, Y); g.fill(); }
-  }
   for (const r of rings) {
     const k = r.t / 0.3;
     g.strokeStyle = `rgba(255,225,160,${1 - k})`; g.lineWidth = 3 * (1 - k) + 1;
@@ -410,16 +359,11 @@ function draw() {
   }
 
   for (const e of enemies) {
-    const [ex, ey, k] = epos(e), near = Math.hypot(ex - px, ey - py);
-    const vis = true;
+    const [ex, ey, k] = epos(e);
     const hopY = k < 1 ? Math.sin(k * 3.1416) * 5 : 0, X = ex * T, Y = ey * T - hopY, R = 7;
     if (e.ghost > 0) {
       g.strokeStyle = COL[e.type]; g.globalAlpha = 0.35 + 0.45 * pulse; g.lineWidth = 2;
       g.beginPath(); g.arc(X, Y, R + e.ghost * 2.5, 0, 6.283); g.stroke(); g.globalAlpha = 1;
-      continue;
-    }
-    if (!vis) {
-      if (near < 9) { g.fillStyle = `rgba(255,60,60,${0.8 * (1 - near / 9)})`; g.fillRect(X - 4, Y - 2, 3, 3); g.fillRect(X + 1, Y - 2, 3, 3); }
       continue;
     }
     if (e.type === 'chg' && e.tel) {            // show the dash lane before it happens
@@ -471,10 +415,10 @@ function draw() {
     g.fillStyle = '#ffb347'; g.beginPath(); g.arc(X + player.fx * 8, Y + player.fy * 8, 2.5, 0, 6.283); g.fill();
   }
 
-  $('pct').textContent = enemies.length;
+  $('enemies').textContent = enemies.length;
   $('time').textContent = fmt(tGame);
   $('hpbar').firstElementChild.style.width = Math.max(0, player.hp) / 3 * 100 + '%';
-  $('lv').textContent = best ? best + '個' : '-';
+  $('best').textContent = best ? best + '個' : '-';
   $('got').textContent = got;
 }
 
