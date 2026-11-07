@@ -287,7 +287,7 @@ const STAGES = {
   cave: { name: 'ステージ1 洞窟', desc: 'いつもの洞窟。5つの型が出る', gen: cellular(0.56, 5), minArea: 0.38 },
   hall: { name: 'ステージ2 大空洞', desc: '壁のない大部屋。緑と青だけ、数は多め',
           gen: a => { for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) a[idx(x, y)] = 1; }, minArea: 0.5,
-          spawn: { initial: 80, everyEarly: 1.5, everyLate: 1 }, mix: { pul: 0, chg: 0, chs: 0 } },
+          spawn: { initial: 100, everyEarly: 1.5, everyLate: 1 }, mix: { pul: 0, chg: 0, chs: 0 } },
 };
 for (const [k, st] of Object.entries(STAGES)) st.key = k;
 
