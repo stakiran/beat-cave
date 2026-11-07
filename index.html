@@ -55,8 +55,19 @@
 <script>
 (() => {
 'use strict';
-const W = 56, H = 36, T = 20;
-const BEAT = 60 / 104;
+/* ---------- tuning (gameplay numbers live here; per-enemy-type numbers live with each type) ---------- */
+const CFG = {
+  bpm: 104,                                  // every enemy acts once per beat
+  cave: { w: 56, h: 36, tile: 20,            // canvas is w*tile x h*tile = 1120x720
+          fill: 0.56, smooth: 5, minArea: 0.38 }, // cellular automaton: initial open ratio, smoothing passes, min share of the biggest region
+  player: { speed: 5, radius: 0.3, hp: 3, invincible: 1.3, hitDist: 0.58 },
+  spawn: { initial: 35, lateFromBeat: 200, everyEarly: 3, everyLate: 2, // one enemy every N beats, faster after lateFromBeat
+           minDist: 8, ghostBeats: 4 },      // path distance from player; beats shown as an outline before it is live
+  gem: { minDist: 14, fallbackDist: 5, pickDist: 0.75 },
+  audio: { hearDist: 9, layers: [15, 30, 50, 70] }, // enemy counts at which bass, arpeggio, snare, offbeat hat join
+};
+const W = CFG.cave.w, H = CFG.cave.h, T = CFG.cave.tile;
+const BEAT = 60 / CFG.bpm;
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const $ = id => document.getElementById(id);
 const PENTA = [0, 3, 5, 7, 10, 12, 15, 17];
@@ -102,8 +113,8 @@ const semi = (root, n) => root * Math.pow(2, n / 12);
 function genCave() {
   for (let attempt = 0; attempt < 30; attempt++) {
     let a = new Uint8Array(W * H);
-    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) a[idx(x, y)] = Math.random() < 0.56 ? 1 : 0;
-    for (let it = 0; it < 5; it++) {
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) a[idx(x, y)] = Math.random() < CFG.cave.fill ? 1 : 0;
+    for (let it = 0; it < CFG.cave.smooth; it++) {
       const b = new Uint8Array(W * H);
       for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
         let n = 0;
@@ -126,7 +137,7 @@ function genCave() {
       if (n > bestN) { bestN = n; best = L; }
       L++;
     }
-    if (bestN < W * H * 0.38) continue;
+    if (bestN < W * H * CFG.cave.minArea) continue;
     for (let i = 0; i < W * H; i++) a[i] = lab[i] === best ? 1 : 0;
     // widen one-tile corridors so there is always a lane to slip past an enemy
     for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
@@ -159,11 +170,11 @@ function reset() {
   dist = new Int16Array(W * H);
   enemies = []; parts = []; rings = [];
   let s; do { s = (Math.random() * W * H) | 0; } while (!open[s]);
-  player = { x: (s % W) + 0.5, y: ((s / W) | 0) + 0.5, hp: 3, inv: 0, fx: 1, fy: 0 };
+  player = { x: (s % W) + 0.5, y: ((s / W) | 0) + 0.5, hp: CFG.player.hp, inv: 0, fx: 1, fy: 0 };
   noteNo = 0;
   tGame = 0; beatNo = -1; over = false; distT = 0; shake = 0;
   computeDist();
-  for (let k = 0; k < 35; k++) addEnemy(0);
+  for (let k = 0; k < CFG.spawn.initial; k++) addEnemy(0);
   got = 0; placeGem();
 }
 let gem = null, got = 0;
@@ -171,7 +182,7 @@ let gem = null, got = 0;
 function placeGem() {
   for (let k = 0; k < 200; k++) {
     const i = (Math.random() * W * H) | 0;
-    if (!open[i] || dist[i] < (k < 150 ? 14 : 5)) continue;
+    if (!open[i] || dist[i] < (k < 150 ? CFG.gem.minDist : CFG.gem.fallbackDist)) continue;
     gem = { x: (i % W) + 0.5, y: ((i / W) | 0) + 0.5, t: tGame }; return;
   }
 }
@@ -181,7 +192,7 @@ const MIX = [['pat', 0.44], ['loop', 0.2], ['pul', 0.13], ['chg', 0.13], ['chs',
 function addEnemy(ghost) {
   for (let k = 0; k < 80; k++) {
     const i = (Math.random() * W * H) | 0;
-    if (!open[i] || dist[i] < 8) continue;
+    if (!open[i] || dist[i] < CFG.spawn.minDist) continue;
     let r = Math.random(), type = 'pat';
     for (const [t, f] of MIX) { if (r < f) { type = t; break; } r -= f; }
     const x = i % W, y = (i / W) | 0;
@@ -208,8 +219,8 @@ function stepTo(e, nx, ny, md = 0.3) { e.fx = e.x; e.fy = e.y; e.x = nx; e.y = n
 function onBeat(n) {
   const near = { pat: 99, loop: 99, chg: 99, pul: 99, chs: 99 }, ev = {};
   const px = player.x, py = player.y;
-  const every = n < 200 ? 3 : 2;
-  if (n > 0 && n % every === 0) addEnemy(4);
+  const every = n < CFG.spawn.lateFromBeat ? CFG.spawn.everyEarly : CFG.spawn.everyLate;
+  if (n > 0 && n % every === 0) addEnemy(CFG.spawn.ghostBeats);
   for (const e of enemies) {
     if (e.ghost > 0) { if (--e.ghost === 0) burst(e.x + 0.5, e.y + 0.5, 6, COL[e.type]); continue; }
     const d = Math.hypot(e.x + 0.5 - px, e.y + 0.5 - py), ph = (n + e.off) % 4;
@@ -247,7 +258,7 @@ function onBeat(n) {
     if (acted && d < near[e.type]) near[e.type] = d;
   }
   // the crowd nearby is what you hear
-  const vol = d => Math.max(0, 1 - d / 9);
+  const vol = d => Math.max(0, 1 - d / CFG.audio.hearDist);
   tone('sine', 110, 45, 0.12, 0.28);
   if (vol(near.pat)) noise(0.03, 0.22 * vol(near.pat), 7000);
   if (vol(near.loop)) { const p = PENTA[[0, 2, 4, 2][n % 4]]; tone('square', semi(ROOT * 4, p), semi(ROOT * 4, p), 0.08, 0.07 * vol(near.loop)); }
@@ -256,11 +267,11 @@ function onBeat(n) {
   if (vol(near.chg)) { noise(0.12, 0.4 * vol(near.chg), 1800); tone('square', 300, 90, 0.12, 0.12 * vol(near.chg)); }
   if (ev.aim !== undefined && vol(ev.aim)) tone('square', 400, 800, 0.2, 0.09 * vol(ev.aim));
 
-  const c = enemies.length;
-  if (c >= 15) { const b = [0, 0, 7, 0, 5, 0, 3, 7][n % 8]; tone('sawtooth', semi(ROOT / 2, b), semi(ROOT / 2, b), 0.2, 0.13); }
-  if (c >= 30) { const a = PENTA[[0, 2, 4, 2, 5, 4, 2, 1][n % 8]]; tone('triangle', semi(ROOT * 2, a), semi(ROOT * 2, a), 0.12, 0.12); tone('triangle', semi(ROOT * 2, a + 7), semi(ROOT * 2, a + 7), 0.1, 0.08, BEAT / 2); }
-  if (c >= 50 && n % 2 === 1) noise(0.1, 0.16, 2200);
-  if (c >= 70) noise(0.025, 0.1, 8000, BEAT / 2);
+  const c = enemies.length, [L1, L2, L3, L4] = CFG.audio.layers;
+  if (c >= L1) { const b = [0, 0, 7, 0, 5, 0, 3, 7][n % 8]; tone('sawtooth', semi(ROOT / 2, b), semi(ROOT / 2, b), 0.2, 0.13); }
+  if (c >= L2) { const a = PENTA[[0, 2, 4, 2, 5, 4, 2, 1][n % 8]]; tone('triangle', semi(ROOT * 2, a), semi(ROOT * 2, a), 0.12, 0.12); tone('triangle', semi(ROOT * 2, a + 7), semi(ROOT * 2, a + 7), 0.1, 0.08, BEAT / 2); }
+  if (c >= L3 && n % 2 === 1) noise(0.1, 0.16, 2200);
+  if (c >= L4) noise(0.025, 0.1, 8000, BEAT / 2);
 }
 
 /* ---------- update ---------- */
@@ -273,7 +284,7 @@ function moveCircle(o, dx, dy, r) {
 }
 function hurt() {
   if (player.inv > 0) return;
-  player.hp--; player.inv = 1.3; shake = 7;
+  player.hp--; player.inv = CFG.player.invincible; shake = 7;
   burst(player.x, player.y, 8, '#ff8a8a');
   tone('square', 90, 40, 0.25, 0.35); noise(0.12, 0.3, 300);
   if (player.hp <= 0) endGame();
@@ -285,7 +296,7 @@ function update(dt) {
   let my = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
   if (mx || my) {
     const l = Math.hypot(mx, my); mx /= l; my /= l; player.fx = mx; player.fy = my;
-    moveCircle(player, mx * 5 * dt, my * 5 * dt, 0.3);
+    moveCircle(player, mx * CFG.player.speed * dt, my * CFG.player.speed * dt, CFG.player.radius);
   }
   player.inv = Math.max(0, player.inv - dt);
   distT -= dt; if (distT <= 0) { computeDist(); distT = 0.2; }
@@ -296,11 +307,11 @@ function update(dt) {
   for (const e of enemies) {
     if (e.ghost > 0) continue;
     const [ex, ey] = epos(e), d = Math.hypot(ex - player.x, ey - player.y);
-    if (d < 0.58) hurt();
+    if (d < CFG.player.hitDist) hurt();
     else if (e.type === 'pul' && tGame - e.burst < BEAT * 0.35 && d < 1.75) hurt();
     if (over) return;
   }
-  if (gem && Math.hypot(gem.x - player.x, gem.y - player.y) < 0.75) {
+  if (gem && Math.hypot(gem.x - player.x, gem.y - player.y) < CFG.gem.pickDist) {
     got++; burst(gem.x, gem.y, 14, '#7ff0ff'); rings.push({ x: gem.x, y: gem.y, r: 3, t: 0 });
     const p = PENTA[noteNo++ % PENTA.length];
     tone('triangle', semi(ROOT * 4, p), semi(ROOT * 4, p), 0.3, 0.35); tone('triangle', semi(ROOT * 4, p + 7), semi(ROOT * 4, p + 7), 0.3, 0.25, 0.07);
@@ -417,7 +428,7 @@ function draw() {
 
   $('enemies').textContent = enemies.length;
   $('time').textContent = fmt(tGame);
-  $('hpbar').firstElementChild.style.width = Math.max(0, player.hp) / 3 * 100 + '%';
+  $('hpbar').firstElementChild.style.width = Math.max(0, player.hp) / CFG.player.hp * 100 + '%';
   $('best').textContent = best ? best + '個' : '-';
   $('got').textContent = got;
 }
