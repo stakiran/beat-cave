@@ -1,5 +1,5 @@
 // 画面なしの動作確認。DOM を最小限スタブし、ランダム歩行で N 秒遊ぶ。例外が出ないこと、ゲームが進むことを見る。
-// 使い方: node dev/headless.js index.html [秒数]
+// 使い方: node dev/headless.js index.html [秒数] [ステージ番号(0始まり)]
 
 // Headless smoke test: load index.html's <script>, stub the DOM, play N seconds with random walking.
 const fs = require('fs');
@@ -10,14 +10,15 @@ const seconds = +(process.argv[3] || 120);
 const noop = () => {};
 const ctx = new Proxy({}, { get: (t, k) => (k === 'createRadialGradient' ? () => ({ addColorStop: noop }) : noop), set: () => true });
 const els = {};
-const el = id => els[id] ||= { textContent: '', innerHTML: '', style: {}, firstElementChild: { style: {} }, listeners: {},
-  addEventListener(ev, fn) { this.listeners[ev] = fn; } };
+const el = id => els[id] ||= { textContent: '', innerHTML: '', className: '', style: {}, firstElementChild: { style: {} }, listeners: {},
+  addEventListener(ev, fn) { this.listeners[ev] = fn; }, append() {}, classList: { toggle() {} } };
+const buttons = []; // stage buttons the game creates, in STAGES order
 const canvas = { width: 1120, height: 720, getContext: () => ctx };
 const winListeners = {};
 let rafCb = null;
 const store = {};
 global.window = global;
-global.document = { getElementById: id => (id === 'c' ? canvas : el(id)) };
+global.document = { getElementById: id => (id === 'c' ? canvas : el(id)), createElement: () => { const b = el('btn' + buttons.length); buttons.push(b); return b; } };
 global.addEventListener = (ev, fn) => { winListeners[ev] = fn; };
 global.requestAnimationFrame = cb => { rafCb = cb; };
 global.performance = { now: () => 0 };
@@ -27,7 +28,7 @@ global.AudioContext = undefined; global.webkitAudioContext = undefined; // initA
 eval(src);
 
 // start and play
-el('start').listeners.click();
+const stageIdx = +(process.argv[4] || 0); buttons[stageIdx].listeners.click(); // which stage to play (index into STAGES)
 const keys = ['w', 'a', 's', 'd'];
 let now = 0, held = null, games = 1, maxEnemies = 0, hits = 0;
 const dt = 1000 / 60;

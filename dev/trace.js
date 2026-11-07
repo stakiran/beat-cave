@@ -1,6 +1,6 @@
 // 乱数を固定した決定的トレース。キャンバス描画命令とゲーム進行をそれぞれハッシュ化する。
 // 2つの版で draw / game が一致すれば挙動が同じ。第5引数にファイルを渡すとフレームごとの記録を書き出す（diff で最初のずれを探せる）。
-// 使い方: node dev/trace.js index.html [秒数] [シード] [ダンプ先]
+// 使い方: node dev/trace.js index.html [秒数] [シード] [ダンプ先] [ステージ番号(0始まり)]
 
 // Deterministic trace: seeded RNG + seeded random walk, hash every canvas call. Same hash => same behaviour.
 const fs = require('fs');
@@ -21,12 +21,13 @@ const ctx = new Proxy({}, {
   set: (t, k, v) => { rec(`${String(k)}=${v}`); return true; },
 });
 const els = {};
-const el = id => els[id] ||= { textContent: '', innerHTML: '', style: {}, firstElementChild: { style: {} }, listeners: {},
-  addEventListener(ev, fn) { this.listeners[ev] = fn; } };
+const el = id => els[id] ||= { textContent: '', innerHTML: '', className: '', style: {}, firstElementChild: { style: {} }, listeners: {},
+  addEventListener(ev, fn) { this.listeners[ev] = fn; }, append() {}, classList: { toggle() {} } };
+const buttons = []; // stage buttons the game creates, in STAGES order
 const canvas = { width: 1120, height: 720, getContext: () => ctx };
 const winListeners = {}; let rafCb = null; const store = {};
 global.window = global;
-global.document = { getElementById: id => (id === 'c' ? canvas : el(id)) };
+global.document = { getElementById: id => (id === 'c' ? canvas : el(id)), createElement: () => { const b = el('btn' + buttons.length); buttons.push(b); return b; } };
 global.addEventListener = (ev, fn) => { winListeners[ev] = fn; };
 global.requestAnimationFrame = cb => { rafCb = cb; };
 global.performance = { now: () => 0 };
@@ -35,7 +36,7 @@ global.AudioContext = undefined; global.webkitAudioContext = undefined;
 const noop = () => {};
 eval(src);
 
-el('start').listeners.click();
+const stageIdx = +(process.argv[6] || 0); buttons[stageIdx].listeners.click(); // which stage to play (index into STAGES)
 const keys = ['w', 'a', 's', 'd'];
 let now = 0, held = null, games = 1, maxEnemies = 0;
 for (let f = 0; f < seconds * 60; f++) {

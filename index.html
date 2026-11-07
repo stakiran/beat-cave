@@ -26,11 +26,16 @@
   button { margin-top: 14px; font: inherit; font-size: 16px; font-weight: 700; color: #1a1408; background: #ffd27a;
     border: 0; border-radius: 8px; padding: 10px 22px; cursor: pointer; }
   button:hover { background: #ffe0a3; }
+  #stages { display: flex; gap: 10px; flex-wrap: wrap; }
+  .stage { text-align: left; line-height: 1.4; }
+  .stage small { display: block; font-weight: 400; font-size: 12px; color: #5a4a20; }
+  .stage.sel { outline: 2px solid #fff; outline-offset: 2px; }
   #help { font-size: 12px; color: #8f879c; padding: 6px 12px 10px; text-align: center; }
 </style>
 </head>
 <body>
 <div id="hud">
+  <span><b id="stname">-</b></span>
   <span>アイテム <b id="got">0</b></span>
   <span>敵 <b id="enemies">0</b></span>
   <span>時間 <b id="time">0:00</b></span>
@@ -45,9 +50,9 @@
       <p>拍で動く群れを縫って、アイテムをいくつ取れるか。</p>
       <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動だけ。敵は倒せない。避けるだけ。</p>
       <p>敵はすべて拍に合わせて決まった型で動く。<span id="types"></span></p>
-      <p>敵は少しずつ、ランダムな場所にランダムな型で増えていく。現れる前に4拍のあいだ輪郭で予告される。アイテムは洞窟のどこかに1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。<kbd>R</kbd> やり直し。音が出ます。</p>
+      <p>敵は少しずつ、ランダムな場所にランダムな型で増えていく。現れる前に4拍のあいだ輪郭で予告される。アイテムは洞窟のどこかに1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。<kbd>R</kbd> 同じステージをやり直し。音が出ます。</p>
     </div>
-    <button id="start">はじめる</button>
+    <div id="stages"></div>
   </div></div>
 </div>
 <div id="help">WASD 移動 / R やり直し</div>
@@ -266,8 +271,8 @@ const TYPES = {
 };
 
 /* ---------- stages ----------
- * A stage is the shape of the cave plus how the crowd grows. To add one, add an entry and pick it in startGame.
- *   name    : shown nowhere yet; for a future picker
+ * A stage is the shape of the cave plus how the crowd grows. To add one, add an entry; the start panel lists them.
+ *   name, desc : button label and one-line description on the start panel; name also sits in the HUD
  *   gen(a)  : write 1 into the W*H array for every open tile. genCave keeps the largest region and widens corridors.
  *   minArea : retry gen while the largest region covers less than this share of the grid
  *   widen   : set false to keep 1-tile corridors (default true)
@@ -275,11 +280,16 @@ const TYPES = {
  *   mix     : { type: weight } overriding TYPES[type].share; 0 removes a type from this stage (optional)
  */
 const STAGES = {
-  cave: { name: '洞窟', gen: cellular(0.56, 5), minArea: 0.38 },
+  cave: { name: 'ステージ1 洞窟', desc: 'いつもの洞窟。5つの型が出る', gen: cellular(0.56, 5), minArea: 0.38 },
+  hall: { name: 'ステージ2 大空洞', desc: '壁のない大部屋。緑と青だけ、数は多め',
+          gen: a => { for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) a[idx(x, y)] = 1; }, minArea: 0.5,
+          spawn: { initial: 60 }, mix: { pul: 0, chg: 0, chs: 0 } },
 };
+for (const [k, st] of Object.entries(STAGES)) st.key = k;
 
 function reset(st = STAGES.cave) {
-  stage = st; spawn = { ...CFG.spawn, ...st.spawn };
+  stage = st; spawn = { ...CFG.spawn, ...st.spawn }; best = loadBest(st);
+  $('stname').textContent = st.name;
   mix = Object.entries(TYPES).map(([k, t]) => [k, st.mix?.[k] ?? t.share]).filter(([, w]) => w > 0);
   mixTotal = mix.reduce((a, [, w]) => a + w, 0);
   genCave(st);
@@ -407,14 +417,14 @@ function update(dt) {
 }
 
 let best = 0;
-try { best = +localStorage.getItem('beatcave-best-items') || 0; } catch (e) {}
+const bestKey = st => 'beatcave-best-items' + (st.key === 'cave' ? '' : '-' + st.key);
+function loadBest(st) { try { return +localStorage.getItem(bestKey(st)) || 0; } catch (e) { return 0; } }
 function endGame() {
   if (over) return; over = true; running = false;
   const rec = got > best;
-  if (rec) { best = got; try { localStorage.setItem('beatcave-best-items', String(best)); } catch (e) {} }
+  if (rec) { best = got; try { localStorage.setItem(bestKey(stage), String(best)); } catch (e) {} }
   $('ptitle').textContent = rec ? '新記録' : 'やられた';
-  $('pbody').innerHTML = `<p>アイテム <b>${got}</b>　生存 <b>${fmt(tGame)}</b>　敵の数 <b>${enemies.length}</b></p><p>ベスト <b>${best}個</b></p>`;
-  $('start').textContent = 'もう一度';
+  $('pbody').innerHTML = `<p>${stage.name}　アイテム <b>${got}</b>　生存 <b>${fmt(tGame)}</b>　敵の数 <b>${enemies.length}</b></p><p>ベスト <b>${best}個</b>　<kbd>R</kbd> か <kbd>Enter</kbd> で同じステージをもう一度。別のステージも選べる。</p>`;
   $('overlay').style.display = 'flex';
 }
 const fmt = s => `${(s / 60) | 0}:${String((s % 60) | 0).padStart(2, '0')}`;
@@ -509,8 +519,18 @@ function frame(now) {
   if (player) draw();
   requestAnimationFrame(frame);
 }
-function startGame() { initAudio(); reset(); running = true; $('overlay').style.display = 'none'; }
-$('start').addEventListener('click', startGame);
+let selStage = STAGES.cave;
+function startGame(st = selStage) {
+  selStage = st;
+  for (const o of Object.values(STAGES)) o.btn.classList.toggle('sel', o === st);
+  initAudio(); reset(st); running = true; $('overlay').style.display = 'none';
+}
+for (const st of Object.values(STAGES)) {
+  st.btn = document.createElement('button'); st.btn.className = 'stage' + (st === selStage ? ' sel' : '');
+  st.btn.innerHTML = `${st.name}<small>${st.desc}</small>`;
+  st.btn.addEventListener('click', () => startGame(st));
+  $('stages').append(st.btn);
+}
 addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
