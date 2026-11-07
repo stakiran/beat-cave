@@ -17,11 +17,12 @@
   .bar > i { display: block; height: 100%; width: 0; background: #e5484d; }
   #wrap { position: relative; width: 100%; max-width: 1120px; flex: 1; min-height: 0; display: flex; justify-content: center; }
   canvas { max-width: 100%; max-height: 100%; aspect-ratio: 1120 / 720; background: #000; border-radius: 6px; }
-  #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  #overlay, #pause { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     background: rgba(8,7,11,.86); }
-  #panel { max-width: 560px; padding: 24px 28px; background: #17141d; border: 1px solid #3a3346; border-radius: 12px; line-height: 1.75; }
-  #panel h1 { margin: 0 0 8px; font-size: 22px; color: #ffd27a; }
-  #panel p { margin: 6px 0; font-size: 14px; }
+  #pause { display: none; background: rgba(8,7,11,.6); }
+  .panel { max-width: 560px; padding: 24px 28px; background: #17141d; border: 1px solid #3a3346; border-radius: 12px; line-height: 1.75; }
+  .panel h1 { margin: 0 0 8px; font-size: 22px; color: #ffd27a; }
+  .panel p { margin: 6px 0; font-size: 14px; }
   kbd { background: #2c2636; border: 1px solid #4a4158; border-bottom-width: 2px; border-radius: 4px; padding: 0 6px; font-family: inherit; font-size: 13px; }
   button { margin-top: 14px; font: inherit; font-size: 16px; font-weight: 700; color: #1a1408; background: #ffd27a;
     border: 0; border-radius: 8px; padding: 10px 22px; cursor: pointer; }
@@ -44,18 +45,22 @@
 </div>
 <div id="wrap">
   <canvas id="c" width="1120" height="720"></canvas>
-  <div id="overlay"><div id="panel">
+  <div id="overlay"><div class="panel">
     <h1 id="ptitle">ビート洞窟 試作6</h1>
     <div id="pbody">
       <p>拍で動く群れを縫って、アイテムをいくつ取れるか。</p>
       <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動だけ。敵は倒せない。避けるだけ。</p>
       <p>敵はすべて拍に合わせて決まった型で動く。<span id="types"></span></p>
-      <p>敵は少しずつ、ランダムな場所にランダムな型で増えていく。現れる前に4拍のあいだ輪郭で予告される。アイテムは洞窟のどこかに1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。<kbd>R</kbd> 同じステージをやり直し。音が出ます。</p>
+      <p>敵は少しずつ、ランダムな場所にランダムな型で増えていく。現れる前に4拍のあいだ輪郭で予告される。アイテムは洞窟のどこかに1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。<kbd>Esc</kbd> ポーズ。<kbd>R</kbd> 同じステージをやり直し。音が出ます。</p>
     </div>
     <div id="stages"></div>
   </div></div>
+  <div id="pause"><div class="panel">
+    <h1>ポーズ</h1>
+    <p><kbd>Esc</kbd> / <kbd>P</kbd> 再開　<kbd>R</kbd> やり直し　<kbd>Q</kbd> ステージ選択へ</p>
+  </div></div>
 </div>
-<div id="help">WASD 移動 / R やり直し</div>
+<div id="help">WASD 移動 / Esc ポーズ / R やり直し</div>
 
 <script>
 (() => {
@@ -80,7 +85,7 @@ const ROOT = 110;
 const idx = (x, y) => y * W + x;
 let open, dist, stage, spawn, mix, mixTotal;   // stage: current STAGES entry; spawn/mix: its resolved settings
 let player, enemies, parts, rings;
-let tGame, beatNo, running = false, over = false, distT, shake, noteNo;
+let tGame, beatNo, running = false, paused = false, over = false, distT, shake, noteNo;
 const isOpen = (x, y) => x >= 0 && y >= 0 && x < W && y < H && open[idx(x, y)] === 1;
 /* ---------- audio ---------- */
 let ac = null, master = null, noiseBuf = null;
@@ -515,7 +520,7 @@ function draw() {
 let last = performance.now();
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (running) update(dt);
+  if (running && !paused) update(dt);
   if (player) draw();
   requestAnimationFrame(frame);
 }
@@ -523,7 +528,19 @@ let selStage = STAGES.cave;
 function startGame(st = selStage) {
   selStage = st;
   for (const o of Object.values(STAGES)) o.btn.classList.toggle('sel', o === st);
-  initAudio(); reset(st); running = true; $('overlay').style.display = 'none';
+  initAudio(); reset(st); running = true; setPaused(false); $('overlay').style.display = 'none';
+}
+function setPaused(on) {
+  paused = on && running && !over;
+  $('pause').style.display = paused ? 'flex' : 'none';
+  if (paused) for (const k in keys) keys[k] = false;
+}
+// the start panel's text is rewritten by endGame; keep the original to come back to it from pause
+const startTitle = $('ptitle').textContent, startBody = $('pbody').innerHTML;
+function toStageSelect() {
+  running = false; setPaused(false);
+  $('ptitle').textContent = startTitle; $('pbody').innerHTML = startBody;
+  $('overlay').style.display = 'flex';
 }
 for (const st of Object.values(STAGES)) {
   st.btn = document.createElement('button'); st.btn.className = 'stage' + (st === selStage ? ' sel' : '');
@@ -535,12 +552,14 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
   if (e.repeat) return;
-  keys[k] = true;
+  if (!paused) keys[k] = true;
   if (k === 'enter' && !running) startGame();
   else if (k === 'r' && ac) startGame();
+  else if ((k === 'escape' || k === 'p') && running && !over) setPaused(!paused);
+  else if (k === 'q' && paused) toStageSelect();
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; setPaused(true); }); // tabbing away pauses
 $('types').innerHTML = Object.values(TYPES).map(t => `<span style="color:${t.color}">${t.jp}</span>は${t.desc}`).join('、') + '。';
 reset(); requestAnimationFrame(frame);
 })();
