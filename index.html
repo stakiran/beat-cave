@@ -72,7 +72,7 @@ const CFG = {
   bpm: 104,                                  // every enemy acts once per beat
   grid: { w: 56, h: 36, tile: 20 },          // canvas is w*tile x h*tile = 1120x720
   player: { speed: 5, radius: 0.3, hp: 3, invincible: 1.3, hitDist: 0.58 },
-  spawn: { initial: 35, lateFromBeat: 200, everyEarly: 3, everyLate: 2, // one enemy every N beats, faster after lateFromBeat
+  spawn: { initial: 35, lateFromBeat: 200, everyEarly: 3, everyLate: 2, // one enemy every N beats (fractions ok: 1.5 = two per three beats), faster after lateFromBeat
            minDist: 8, ghostBeats: 4 },      // path distance from player; beats shown as an outline before it is live. Stages may override.
   gem: { minDist: 14, fallbackDist: 5, pickDist: 0.75 },
   audio: { hearDist: 9, layers: [15, 30, 50, 70] }, // enemy counts at which bass, arpeggio, snare, offbeat hat join
@@ -290,7 +290,7 @@ const STAGES = {
   cave: { name: 'ステージ1 洞窟', desc: 'いつもの洞窟。5つの型が出る', gen: cellular(0.56, 5), minArea: 0.38 },
   hall: { name: 'ステージ2 大空洞', desc: '壁のない大部屋。緑と青だけ、数は多め',
           gen: a => { for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) a[idx(x, y)] = 1; }, minArea: 0.5,
-          spawn: { initial: 60 }, mix: { pul: 0, chg: 0, chs: 0 } },
+          spawn: { initial: 80, everyEarly: 1.5, everyLate: 1 }, mix: { pul: 0, chg: 0, chs: 0 } },
 };
 for (const [k, st] of Object.entries(STAGES)) st.key = k;
 
@@ -352,7 +352,8 @@ function stepTo(e, nx, ny, md = 0.3) { e.fx = e.x; e.fy = e.y; e.x = nx; e.y = n
 function onBeat(n) {
   const px = player.x, py = player.y, near = {};   // nearest distance per "type:sound" this beat
   const every = n < spawn.lateFromBeat ? spawn.everyEarly : spawn.everyLate;
-  if (n > 0 && n % every === 0) addEnemy(spawn.ghostBeats);
+  const arrivals = n > 0 ? Math.floor(n / every) - Math.floor((n - 1) / every) : 0;   // how many "every" boundaries this beat crossed
+  for (let k = 0; k < arrivals; k++) addEnemy(spawn.ghostBeats);
   for (const e of enemies) {
     const t = TYPES[e.type];
     if (e.ghost > 0) { if (--e.ghost === 0) burst(e.x + 0.5, e.y + 0.5, 6, t.color); continue; }
