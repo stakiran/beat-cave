@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ビート洞窟</title>
+<title>ビートケイブ</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -37,7 +37,7 @@
 <body>
 <div id="hud">
   <span><b id="stname">-</b></span>
-  <span>アイテム <b id="got">0</b></span>
+  <span>クリスタル <b id="got">0</b></span>
   <span>敵 <b id="enemies">0</b></span>
   <span>時間 <b id="time">0:00</b></span>
   <span>HP <span class="bar" id="hpbar"><i></i></span></span>
@@ -46,18 +46,18 @@
 <div id="wrap">
   <canvas id="c" width="1120" height="720"></canvas>
   <div id="overlay"><div class="panel">
-    <h1 id="ptitle">ビート洞窟 試作6</h1>
+    <h1 id="ptitle">ビートケイブ</h1>
     <div id="pbody">
-      <p>拍で動く群れを縫って、アイテムをいくつ取れるか。</p>
-      <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動だけ。敵は倒せない。避けるだけ。</p>
-      <p>敵はすべて拍に合わせて決まった型で動く。<span id="types"></span></p>
-      <p>敵は少しずつ、ランダムな場所にランダムな型で増えていく。現れる前に4拍のあいだ輪郭で予告される。アイテムは洞窟のどこかに1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。<kbd>Esc</kbd> ポーズ。<kbd>R</kbd> 同じステージをやり直し。音が出ます。</p>
+      <p>拍で動く群れを縫って、クリスタルをできるだけ集めろ。</p>
+      <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動　<kbd>Esc</kbd> ポーズ　<kbd>R</kbd> やり直し　　音が出ます</p>
     </div>
     <div id="stages"></div>
   </div></div>
   <div id="pause"><div class="panel">
     <h1>ポーズ</h1>
     <p><kbd>Esc</kbd> / <kbd>P</kbd> 再開　<kbd>R</kbd> やり直し　<kbd>Q</kbd> ステージ選択へ</p>
+    <p>敵は倒せない。すべて拍に合わせて決まった型で動く。<span id="types"></span></p>
+    <p>敵は少しずつ増える。現れる前に4拍のあいだ輪郭で予告される。クリスタルは常に1つだけ光っていて、取ると次が別の場所に現れる。3回当たると終わり。</p>
   </div></div>
 </div>
 <div id="help">WASD 移動 / Esc ポーズ / R やり直し</div>
@@ -429,7 +429,7 @@ function endGame() {
   const rec = got > best;
   if (rec) { best = got; try { localStorage.setItem(bestKey(stage), String(best)); } catch (e) {} }
   $('ptitle').textContent = rec ? '新記録' : 'やられた';
-  $('pbody').innerHTML = `<p>${stage.name}　アイテム <b>${got}</b>　生存 <b>${fmt(tGame)}</b>　敵の数 <b>${enemies.length}</b></p><p>ベスト <b>${best}個</b>　<kbd>R</kbd> か <kbd>Enter</kbd> で同じステージをもう一度。別のステージも選べる。</p>`;
+  $('pbody').innerHTML = `<p>${stage.name}　クリスタル <b>${got}</b>　生存 <b>${fmt(tGame)}</b>　敵の数 <b>${enemies.length}</b></p><p>ベスト <b>${best}個</b>　<kbd>R</kbd> か <kbd>Enter</kbd> で同じステージをもう一度。別のステージも選べる。</p>`;
   $('overlay').style.display = 'flex';
 }
 const fmt = s => `${(s / 60) | 0}:${String((s % 60) | 0).padStart(2, '0')}`;
@@ -535,6 +535,7 @@ function setPaused(on) {
   $('pause').style.display = paused ? 'flex' : 'none';
   if (paused) for (const k in keys) keys[k] = false;
 }
+$('types').innerHTML = Object.values(TYPES).map(t => `<span style="color:${t.color}">${t.jp}</span>は${t.desc}`).join('、') + '。';
 // the start panel's text is rewritten by endGame; keep the original to come back to it from pause
 const startTitle = $('ptitle').textContent, startBody = $('pbody').innerHTML;
 function toStageSelect() {
@@ -560,7 +561,6 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; setPaused(true); }); // tabbing away pauses
-$('types').innerHTML = Object.values(TYPES).map(t => `<span style="color:${t.color}">${t.jp}</span>は${t.desc}`).join('、') + '。';
 reset(); requestAnimationFrame(frame);
 })();
 </script>
