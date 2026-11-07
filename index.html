@@ -67,16 +67,18 @@
 'use strict';
 /* ---------- tuning (gameplay numbers live here; per-enemy-type numbers live with each type) ---------- */
 const CFG = {
-  bpm: 104,                                  // every enemy acts once per beat
+  bpm: 104,                                  // every enemy acts once per beat. Stages may override; the player's speed scales with it
   grid: { w: 56, h: 36, tile: 20 },          // canvas is w*tile x h*tile = 1120x720
-  player: { speed: 5, radius: 0.3, hp: 3, invincible: 1.3, hitDist: 0.58 },
+  player: { speed: 5,                        // tiles per second at CFG.bpm (so tiles per beat stays fixed when a stage changes tempo)
+            radius: 0.3, hp: 3, invincible: 1.3, hitDist: 0.58,
+            assist: 0.55 },                  // corner assist: when blocked, slide up to this far sideways into an opening
   spawn: { initial: 35, lateFromBeat: 200, everyEarly: 3, everyLate: 2, // one enemy every N beats (fractions ok: 1.5 = two per three beats), faster after lateFromBeat
            minDist: 8, ghostBeats: 4 },      // path distance from player; beats shown as an outline before it is live. Stages may override.
   gem: { minDist: 14, fallbackDist: 5, pickDist: 0.75 },
   audio: { hearDist: 9, layers: [15, 30, 50, 70] }, // enemy counts at which bass, arpeggio, snare, offbeat hat join
 };
 const W = CFG.grid.w, H = CFG.grid.h, T = CFG.grid.tile;
-const BEAT = 60 / CFG.bpm;
+let BEAT = 60 / CFG.bpm, pspeed = CFG.player.speed;   // set per stage in reset
 const pulseNow = () => Math.exp(-((tGame % BEAT) / BEAT) * 5); // 1 on the beat, fading to ~0 before the next
 const cv = document.getElementById('c'), g = cv.getContext('2d');
 const $ = id => document.getElementById(id);
@@ -188,6 +190,7 @@ function computeDist() {
  *   beat(e, c)      : runs once per beat with c = { n, ph, d, px, py } (d = distance to player).
  *                     Return a sound key when the enemy does something audible (true means 'act'), else falsy.
  *   sounds          : { key: (vol, n) => ... } played once per beat for the nearest enemy that returned that key
+ *   hearDist        : how far that enemy's sounds carry, in tiles (default CFG.audio.hearDist)
  *   hits(e, d)      : extra hit test besides body contact (optional)
  *   tele(e, X, Y)   : telegraph drawn under the body (optional)
  *   body(e, X, Y, R): outline path of the body; default is a circle (optional)
@@ -196,6 +199,24 @@ function computeDist() {
  */
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
 function facingDot(e, X, Y) { g.fillStyle = 'rgba(0,0,0,.55)'; g.beginPath(); g.arc(X + e.dx * 4, Y + e.dy * 4, 2, 0, 6.283); g.fill(); }
+function eyes(e, X, Y) { g.fillStyle = '#fff'; g.fillRect(X - 4, Y - 2, 3, 3); g.fillRect(X + 1, Y - 2, 3, 3); }
+// one step down the path gradient toward the player (stays put, but still "acts", when no neighbour is closer)
+function chaseStep(e, md) {
+  let bd = dist[idx(e.x, e.y)], bx = e.x, by = e.y;
+  for (const [dx, dy] of DIRS) {
+    const nd = isOpen(e.x + dx, e.y + dy) ? dist[idx(e.x + dx, e.y + dy)] : -1;
+    if (nd >= 0 && nd < bd) { bd = nd; bx = e.x + dx; by = e.y + dy; }
+  }
+  stepTo(e, bx, by, md); return true;
+}
+// a random open tile whose path distance from the player is within [near, far]
+function tileAtDist(near, far) {
+  for (let k = 0; k < 80; k++) {
+    const i = (Math.random() * W * H) | 0;
+    if (open[i] && dist[i] >= near && dist[i] <= far) return { x: i % W, y: (i / W) | 0 };
+  }
+  return null;
+}
 const TYPES = {
   pat: { color: '#5fae57', share: 0.44, period: 4,
     init(e) { if (Math.random() < 0.5) e.dx = Math.random() < 0.5 ? 1 : -1; else e.dy = Math.random() < 0.5 ? 1 : -1; },
@@ -259,18 +280,48 @@ const TYPES = {
     body(e, X, Y, R) { const a = Math.atan2(e.dy, e.dx || (e.dy ? 0 : 1)); for (let k = 0; k < 3; k++) { const b = a + k * 2.094; g[k ? 'lineTo' : 'moveTo'](X + Math.cos(b) * (R + 2), Y + Math.sin(b) * (R + 2)); } },
   },
   chs: { color: '#9a5fd0', share: 0.10, period: 4, range: 14,
-    beat(e, c) {                                // every other beat, one step down the path gradient
+    beat(e, c) {                                // every other beat, one step closer while within range
       const dd = dist[idx(e.x, e.y)];
       if (c.ph % 2 || dd <= 0 || dd >= this.range) return false;
-      let bd = dd, bx = e.x, by = e.y;
-      for (const [dx, dy] of DIRS) {
-        const nd = isOpen(e.x + dx, e.y + dy) ? dist[idx(e.x + dx, e.y + dy)] : -1;
-        if (nd >= 0 && nd < bd) { bd = nd; bx = e.x + dx; by = e.y + dy; }
-      }
-      stepTo(e, bx, by, 0.4); return true;
+      return chaseStep(e, 0.4);
     },
     sounds: { act: (v, n) => tone('sawtooth', semi(ROOT / 2, n % 4 ? 0 : 7), semi(ROOT / 2, 0), 0.25, 0.22 * v) },
-    mark(e, X, Y) { g.fillStyle = '#fff'; g.fillRect(X - 4, Y - 2, 3, 3); g.fillRect(X + 1, Y - 2, 3, 3); },
+    mark: eyes,
+  },
+  hunt: { color: '#ff5fa2', share: 0, period: 1, hearDist: 60,   // not in the random mix; stages place it with `fixed`
+    beat(e) {                                   // every beat, one step closer, from anywhere on the map
+      if (dist[idx(e.x, e.y)] <= 0) return false;
+      return chaseStep(e, 0.35);
+    },
+    sounds: { act: v => { tone('square', 48, 40, 0.2, 0.05 + 0.3 * v); noise(0.05, 0.1 * v, 200); } }, // footsteps carry across the map
+    body(e, X, Y, R) { g.arc(X, Y, R + 3, 0, 6.283); },
+    mark: eyes,
+  },
+  wrp: { color: '#f2e14c', share: 0, period: 12, warn: 2, near: 3, far: 10, range: 14,
+    init(e) { e.to = null; },
+    beat(e, c) {                                // chases like chs; once a cycle it marks a spot for 2 beats, then jumps there
+      if (c.ph === this.period - this.warn) { e.to = tileAtDist(this.near, this.far); e.tel = !!e.to; return e.to ? 'warn' : false; }
+      if (c.ph === 0 && e.to) {
+        burst(e.x + 0.5, e.y + 0.5, 6, this.color);
+        e.x = e.fx = e.to.x; e.y = e.fy = e.to.y; e.mt = tGame; e.to = null; e.tel = false;
+        burst(e.x + 0.5, e.y + 0.5, 8, this.color); return 'jump';
+      }
+      if (e.to) { e.tel = true; return false; }  // holds still while the mark is showing
+      const dd = dist[idx(e.x, e.y)];
+      if (c.ph % 2 || dd <= 0 || dd >= this.range) return false;
+      return chaseStep(e, 0.4);
+    },
+    sounds: { act: (v, n) => tone('sawtooth', semi(ROOT, n % 4 ? 0 : 7), semi(ROOT, 0), 0.2, 0.18 * v),
+              warn: v => tone('sine', 600, 1200, 0.3, 0.12 * v),
+              jump: v => { tone('square', 1200, 200, 0.15, 0.15 * v); noise(0.08, 0.2 * v, 3000); } },
+    tele(e) {                                   // the landing spot: a pulsing ring with a dot
+      if (!e.to) return;
+      const X = (e.to.x + 0.5) * T, Y = (e.to.y + 0.5) * T, p = pulseNow();
+      g.strokeStyle = `rgba(242,225,76,${0.45 + 0.5 * p})`; g.lineWidth = 2;
+      g.beginPath(); g.arc(X, Y, T * (0.3 + 0.25 * (1 - p)), 0, 6.283); g.stroke();
+      g.fillStyle = '#f2e14c'; g.fillRect(X - 2, Y - 2, 4, 4);
+    },
+    mark: eyes,
   },
 };
 
@@ -282,17 +333,26 @@ const TYPES = {
  *   widen   : set false to keep 1-tile corridors (default true)
  *   spawn   : overrides for CFG.spawn (optional)
  *   mix     : { type: weight } overriding TYPES[type].share; 0 removes a type from this stage (optional)
+ *   fixed   : enemies placed at the start besides the random ones: [{ type, minDist }] (optional)
+ *   bpm     : tempo override (optional). Everything per beat speeds up, the player with it
  */
+// city blocks: solid b×b blocks separated by 1-tile streets
+const blocks = b => a => { for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) if ((x - 1) % (b + 1) === 0 || (y - 1) % (b + 1) === 0) a[idx(x, y)] = 1; };
 const STAGES = {
   cave: { name: 'ステージ1 洞窟', desc: 'いつもの洞窟。5つの型が出る', gen: cellular(0.56, 5), minArea: 0.38 },
   hall: { name: 'ステージ2 大空洞', desc: '壁のない大部屋。緑と青だけ、数は多め',
           gen: a => { for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) a[idx(x, y)] = 1; }, minArea: 0.5,
           spawn: { initial: 100, everyEarly: 1.5, everyLate: 1 }, mix: { pul: 0, chg: 0, chs: 0 } },
+  city: { name: 'ステージ3 碁盤都市', desc: '幅1マスの通路が格子に走る。紫が主力で、速い',
+          gen: blocks(2), minArea: 0.3, widen: false, bpm: 140,
+          spawn: { initial: 25 }, mix: { chs: 50, pat: 30, pul: 10, wrp: 10, loop: 0, chg: 0 },
+          fixed: [{ type: 'hunt', minDist: 20 }] },
 };
 for (const [k, st] of Object.entries(STAGES)) st.key = k;
 
 function reset(st = STAGES.cave) {
   stage = st; spawn = { ...CFG.spawn, ...st.spawn }; best = loadBest(st);
+  BEAT = 60 / (st.bpm ?? CFG.bpm); pspeed = CFG.player.speed * (st.bpm ?? CFG.bpm) / CFG.bpm;
   $('stname').textContent = st.name;
   mix = Object.entries(TYPES).map(([k, t]) => [k, st.mix?.[k] ?? t.share]).filter(([, w]) => w > 0);
   mixTotal = mix.reduce((a, [, w]) => a + w, 0);
@@ -305,6 +365,7 @@ function reset(st = STAGES.cave) {
   tGame = 0; beatNo = -1; over = false; distT = 0; shake = 0;
   computeDist();
   for (let k = 0; k < spawn.initial; k++) addEnemy(0);
+  for (const f of st.fixed ?? []) addEnemy(0, f.type, f.minDist);
   got = 0; placeGem();
 }
 let gem = null, got = 0;
@@ -318,12 +379,11 @@ function placeGem() {
 }
 
 // enemies arrive at random: random tile, random type, announced as a ghost for a few beats
-function addEnemy(ghost) {
+function addEnemy(ghost, type, minDist = spawn.minDist) {
   for (let k = 0; k < 80; k++) {
     const i = (Math.random() * W * H) | 0;
-    if (!open[i] || dist[i] < spawn.minDist) continue;
-    let r = Math.random() * mixTotal, type = mix[0][0];
-    for (const [t, w] of mix) { if (r < w) { type = t; break; } r -= w; }
+    if (!open[i] || dist[i] < (k < 60 ? minDist : spawn.minDist)) continue;   // fall back to the usual distance if the map is tight
+    if (!type) { let r = Math.random() * mixTotal; type = mix[0][0]; for (const [t, w] of mix) { if (r < w) { type = t; break; } r -= w; } }
     const x = i % W, y = (i / W) | 0;
     const t = TYPES[type];
     const e = { type, x, y, fx: x, fy: y, mt: -9, md: 0.3, off: (Math.random() * t.period) | 0, dx: 0, dy: 0, tel: false, ghost };
@@ -359,9 +419,11 @@ function onBeat(n) {
     if (key) { const k = e.type + ':' + (key === true ? 'act' : key); if (!(k in near) || d < near[k]) near[k] = d; }
   }
   // the crowd nearby is what you hear
-  const vol = d => Math.max(0, 1 - d / CFG.audio.hearDist);
   tone('sine', 110, 45, 0.12, 0.28);                                                    // kick on every beat
-  for (const k in near) { const v = vol(near[k]); if (v > 0) { const [t, snd] = k.split(':'); TYPES[t].sounds[snd](v, n); } }
+  for (const k in near) {
+    const [t, snd] = k.split(':'), v = Math.max(0, 1 - near[k] / (TYPES[t].hearDist ?? CFG.audio.hearDist));
+    if (v > 0) TYPES[t].sounds[snd](v, n);
+  }
 
   const c = enemies.length, [L1, L2, L3, L4] = CFG.audio.layers;
   if (c >= L1) { const b = [0, 0, 7, 0, 5, 0, 3, 7][n % 8]; tone('sawtooth', semi(ROOT / 2, b), semi(ROOT / 2, b), 0.2, 0.13); }
@@ -372,11 +434,20 @@ function onBeat(n) {
 
 /* ---------- update ---------- */
 const keys = {};
+// axis-by-axis move. When one axis is pushed alone and blocked, slide sideways toward the nearest tile
+// centre (within CFG.player.assist) from which that push is clear, so a corner taken a bit early or late still works.
 function moveCircle(o, dx, dy, r) {
   const hitWall = (x, y) => !isOpen((x - r) | 0, (y - r) | 0) || !isOpen((x + r) | 0, (y - r) | 0) ||
                             !isOpen((x - r) | 0, (y + r) | 0) || !isOpen((x + r) | 0, (y + r) | 0);
-  if (!hitWall(o.x + dx, o.y)) o.x += dx;
-  if (!hitWall(o.x, o.y + dy)) o.y += dy;
+  const slide = (ax, clearAt) => {
+    const c = Math.floor(o[ax]) + 0.5, step = Math.abs(dx || dy);
+    for (const v of [c, c - 1, c + 1]) {
+      if (Math.abs(v - o[ax]) > CFG.player.assist || !clearAt(v)) continue;
+      o[ax] += Math.sign(v - o[ax]) * Math.min(step, Math.abs(v - o[ax])); return;
+    }
+  };
+  if (dx) { if (!hitWall(o.x + dx, o.y)) o.x += dx; else if (!dy) slide('y', y => !hitWall(o.x + dx, y)); }
+  if (dy) { if (!hitWall(o.x, o.y + dy)) o.y += dy; else if (!dx) slide('x', x => !hitWall(x, o.y + dy)); }
 }
 function hurt() {
   if (player.inv > 0) return;
@@ -392,7 +463,7 @@ function update(dt) {
   let my = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
   if (mx || my) {
     const l = Math.hypot(mx, my); mx /= l; my /= l; player.fx = mx; player.fy = my;
-    moveCircle(player, mx * CFG.player.speed * dt, my * CFG.player.speed * dt, CFG.player.radius);
+    moveCircle(player, mx * pspeed * dt, my * pspeed * dt, CFG.player.radius);
   }
   player.inv = Math.max(0, player.inv - dt);
   distT -= dt; if (distT <= 0) { computeDist(); distT = 0.2; }
@@ -568,6 +639,7 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; setPaused(true); }); // tabbing away pauses
 reset(); requestAnimationFrame(frame);
+window.beatcaveDebug = () => ({ player, enemies, open, dist, stage, tGame, BEAT, pspeed, moveCircle });   // for dev/ scripts only
 })();
 </script>
 </body>
